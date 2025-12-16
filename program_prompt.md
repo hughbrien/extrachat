@@ -20,8 +20,8 @@ Do not use external dependencies unless explicitly mentioned below; prefer stand
 - Make the application multi-threaded: Use goroutines for concurrent API calls, logging, and metrics collection to handle multiple sessions or background tasks efficiently.
 
 ### Logging
-- All logs sent to stdout.
-- Also log to a file: ./log/<program_name>.log (e.g., ./log/chatbot.log).
+- Don't send the logs to standard out.   
+- Logs go to a file: ./log/<program_name>.log (e.g., ./log/chatbot.log).
 - Implement log rolling: Rotate logs every 10MB (use a library like github.com/natefinch/lumberjack for rotation).
 - Use structured logging (e.g., with log/slog in Go stdlib).
 - Logs will picked up OTEL collector automatically running locally 
@@ -29,7 +29,7 @@ Do not use external dependencies unless explicitly mentioned below; prefer stand
 
 ### Tracing and Metrics with OpenTelemetry (OTEL)
 - Trace all LLM calls using OpenTelemetry (use go.opentelemetry.io/otel for tracing and metrics).
-- Export traces and metrics to stdout (console exporter) for simplicity; assume OTEL collector is optional.
+- Do not send  traces and metrics to stdout (console exporter) for simplicity; assume OTEL collector is optional.
 - For each request/response:
     - Create a span for the full request cycle.
     - Record response time as an OTEL metric (e.g., histogram for latency in milliseconds).

@@ -20,8 +20,6 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -159,9 +157,8 @@ func initLogger() (*slog.Logger, error) {
 		Compress:   true,
 	}
 
-	multiWriter := io.MultiWriter(os.Stdout, lumberjackLogger)
-
-	handler := slog.NewJSONHandler(multiWriter, &slog.HandlerOptions{
+	// Log only to file, not to stdout
+	handler := slog.NewJSONHandler(lumberjackLogger, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
 
@@ -172,6 +169,7 @@ func initLogger() (*slog.Logger, error) {
 }
 
 // initTelemetry initializes OpenTelemetry tracing and metrics
+// Note: Does not export to stdout - assumes OTEL collector will pick up traces/metrics
 func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), error) {
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
@@ -183,33 +181,16 @@ func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), err
 		return nil, nil, nil, fmt.Errorf("failed to create resource: %w", err)
 	}
 
-	traceExporter, err := stdouttrace.New(
-		stdouttrace.WithPrettyPrint(),
-	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create trace exporter: %w", err)
-	}
-
+	// Set up tracer provider without stdout exporter
+	// OTEL collector will pick up traces automatically
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
 
-	metricExporter, err := stdoutmetric.New(
-		stdoutmetric.WithPrettyPrint(),
-	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create metric exporter: %w", err)
-	}
-
+	// Set up meter provider without stdout exporter
+	// OTEL collector will pick up metrics automatically
 	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(
-				metricExporter,
-				sdkmetric.WithInterval(10*time.Second),
-			),
-		),
 		sdkmetric.WithResource(res),
 	)
 	otel.SetMeterProvider(mp)
