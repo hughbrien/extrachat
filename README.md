@@ -7,7 +7,7 @@ A multi-threaded, portable command-line chatbot application written in Go that s
 - **Multiple LLM Backends**: Support for Ollama, Anthropic, Grok (xAI), and OpenAI
 - **Multi-threaded**: Concurrent API calls, logging, and metrics collection using goroutines
 - **Caching**: In-memory cache with SQLite persistence for request/response storage
-- **Structured Logging**: JSON logging to stdout and file with automatic rotation (10MB)
+- **Structured Logging**: JSON logging to file with automatic rotation (10MB)
 - **OpenTelemetry**: Full tracing and metrics for all LLM API calls
 - **Session Management**: Persistent chat sessions with SQLite database
 - **Cross-platform**: Works on Windows, Linux, and macOS
@@ -162,15 +162,16 @@ The application creates a SQLite database (`chatbot.db`) with the following sche
 
 ## Logging
 
-Logs are written to both:
-- **stdout**: JSON formatted logs
-- **File**: `./log/chatbot.log` with automatic rotation
+Logs are written to:
+- **File**: `./log/chatbot.log` with automatic rotation (JSON format)
 
 Log files rotate when they reach 10MB in size, keeping up to 3 backups. Old logs are compressed.
 
+Note: Logs are NOT written to stdout to keep the console clean for chat interactions. The OTEL collector running locally will automatically pick up log data.
+
 ## OpenTelemetry
 
-The application exports traces and metrics to stdout in JSON format. This includes:
+The application is fully instrumented with OpenTelemetry for tracing and metrics:
 
 - **Traces**: Full request/response cycles for each LLM call
 - **Metrics**:
@@ -179,7 +180,7 @@ The application exports traces and metrics to stdout in JSON format. This includ
   - Cache hit/miss rates
   - All usage fields from API responses
 
-Metrics can be collected by an OTEL collector running locally.
+**Note**: Traces and metrics are NOT exported to stdout. Instead, they are designed to be collected by an OTEL collector running locally, which will automatically pick up the telemetry data. This keeps the console output clean and focused on the chat interaction.
 
 ## Caching
 
