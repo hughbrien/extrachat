@@ -23,6 +23,13 @@ The chatbot application is fully instrumented with OpenTelemetry to provide obse
 - Each trace includes full span details, timings, and attributes
 - Traces are NOT written to stdout to keep the console clean
 
+**Metrics Output:**
+- Metrics are automatically written to `./logs/metrics_traces.log` in JSON format for local debugging
+- Exported every 10 seconds with current metric values
+- File uses automatic rotation (10MB limit, 3 backups, compressed)
+- Includes all LLM usage metrics, request durations, and custom metrics
+- Metrics are NOT written to stdout to keep the console clean
+
 **OTEL Collector Integration:**
 The application is designed to work with an OpenTelemetry Collector running locally, which can automatically pick up and export telemetry data to your preferred backend (e.g., Jaeger, Prometheus, Grafana, etc.).
 
@@ -215,6 +222,117 @@ Cache hits and misses are logged (available in log analysis):
   "key": "a1b2c3d4e5f67890"
 }
 ```
+
+### Viewing Metrics Files for Debugging
+
+Metrics are automatically written to `./logs/metrics_traces.log` in JSON format every 10 seconds. Each metrics export contains:
+- Resource attributes (service name, version)
+- Scope information
+- All recorded metrics with their values
+- Timestamps
+- Metric types (Histogram, Counter, Gauge, etc.)
+
+**Example Metrics Entry:**
+```json
+{
+  "Resource": [
+    {
+      "Key": "service.name",
+      "Value": {
+        "Type": "STRING",
+        "Value": "chatbot"
+      }
+    },
+    {
+      "Key": "service.version",
+      "Value": {
+        "Type": "STRING",
+        "Value": "1.0.0"
+      }
+    }
+  ],
+  "ScopeMetrics": [
+    {
+      "Scope": {
+        "Name": "chatbot",
+        "Version": "",
+        "SchemaURL": ""
+      },
+      "Metrics": [
+        {
+          "Name": "http.client.request.duration",
+          "Description": "HTTP request duration in milliseconds",
+          "Unit": "ms",
+          "Data": {
+            "DataPoints": [
+              {
+                "Attributes": [],
+                "StartTime": "2025-12-16T10:30:00.123456789-05:00",
+                "Time": "2025-12-16T10:30:10.123456789-05:00",
+                "Count": 15,
+                "Sum": 3250.5,
+                "Min": 150.2,
+                "Max": 450.8
+              }
+            ],
+            "Temporality": "CumulativeTemporality"
+          }
+        },
+        {
+          "Name": "llm.usage.input_tokens",
+          "Description": "LLM usage metric: input_tokens",
+          "Unit": "",
+          "Data": {
+            "DataPoints": [
+              {
+                "Attributes": [],
+                "StartTime": "2025-12-16T10:30:00.123456789-05:00",
+                "Time": "2025-12-16T10:30:10.123456789-05:00",
+                "Value": 2048
+              }
+            ],
+            "Temporality": "CumulativeTemporality",
+            "IsMonotonic": true
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Viewing Metrics:**
+```bash
+# View latest metrics
+tail -f ./logs/metrics_traces.log
+
+# Pretty print JSON metrics
+cat ./logs/metrics_traces.log | jq '.'
+
+# Extract specific metric
+cat ./logs/metrics_traces.log | jq '.ScopeMetrics[].Metrics[] | select(.Name == "http.client.request.duration")'
+
+# Get all LLM usage metrics
+cat ./logs/metrics_traces.log | jq '.ScopeMetrics[].Metrics[] | select(.Name | startswith("llm.usage"))'
+
+# Show latest metric values (last export)
+tail -1 ./logs/metrics_traces.log | jq '.ScopeMetrics[].Metrics[] | {name: .Name, value: .Data.DataPoints[0].Value}'
+
+# Calculate average request duration
+cat ./logs/metrics_traces.log | jq '.ScopeMetrics[].Metrics[] | select(.Name == "http.client.request.duration") | .Data.DataPoints[0] | .Sum / .Count'
+```
+
+**Monitoring Metrics Over Time:**
+```bash
+# Watch metrics in real-time (updates every 2 seconds)
+watch -n 2 'tail -1 ./logs/metrics_traces.log | jq ".ScopeMetrics[].Metrics[]"'
+
+# Track token usage over time
+grep "llm.usage.input_tokens" ./logs/metrics_traces.log | jq -r '.ScopeMetrics[].Metrics[] | select(.Name == "llm.usage.input_tokens") | "\(.Data.DataPoints[0].Time): \(.Data.DataPoints[0].Value)"'
+```
+
+**Rotating Metrics Files:**
+The metrics file automatically rotates when it reaches 10MB. Old files are compressed and up to 3 backups are kept.
 
 ## OTEL Collector Setup
 

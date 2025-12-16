@@ -20,6 +20,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -172,6 +173,7 @@ func initLogger() (*slog.Logger, error) {
 
 // initTelemetry initializes OpenTelemetry tracing and metrics
 // Traces are exported to ./logs/chatbot_traces.log for debugging
+// Metrics are exported to ./logs/metrics_traces.log for debugging (every 10 seconds)
 // OTEL collector can still pick up traces/metrics via the SDK
 func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), error) {
 	res, err := resource.New(ctx,
@@ -216,9 +218,33 @@ func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), err
 	)
 	otel.SetTracerProvider(tp)
 
-	// Set up meter provider without stdout exporter
-	// OTEL collector will pick up metrics automatically
+	// Set up file writer for metrics with rotation
+	metricsFile := &lumberjack.Logger{
+		Filename:   filepath.Join(logDir, "metrics_traces.log"),
+		MaxSize:    10, // 10 MB
+		MaxBackups: 3,
+		MaxAge:     28,
+		Compress:   true,
+	}
+
+	// Create metrics exporter that writes to file
+	metricExporter, err := stdoutmetric.New(
+		stdoutmetric.WithWriter(metricsFile),
+		stdoutmetric.WithPrettyPrint(),
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create metric exporter: %w", err)
+	}
+
+	// Set up meter provider with file exporter
+	// OTEL collector can still pick up metrics via the SDK
 	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(
+			sdkmetric.NewPeriodicReader(
+				metricExporter,
+				sdkmetric.WithInterval(10*time.Second),
+			),
+		),
 		sdkmetric.WithResource(res),
 	)
 	otel.SetMeterProvider(mp)
@@ -237,6 +263,9 @@ func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), err
 		}
 		if err := traceFile.Close(); err != nil {
 			slog.Error("failed to close trace file", "error", err)
+		}
+		if err := metricsFile.Close(); err != nil {
+			slog.Error("failed to close metrics file", "error", err)
 		}
 	}
 

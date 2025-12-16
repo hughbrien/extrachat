@@ -149,7 +149,8 @@ ExtraChat/
 ├── chatbot.db                # SQLite database (generated)
 └── logs/
     ├── chatbot.log           # Application logs (generated)
-    └── chatbot_traces.log    # OpenTelemetry traces (generated)
+    ├── chatbot_traces.log    # OpenTelemetry traces (generated)
+    └── metrics_traces.log    # OpenTelemetry metrics (generated)
 ```
 
 ## Database Schema
@@ -173,6 +174,7 @@ The application creates a SQLite database (`chatbot.db`) with the following sche
 Logs are written to:
 - **Application Logs**: `./logs/chatbot.log` with automatic rotation (JSON format)
 - **Trace Logs**: `./logs/chatbot_traces.log` with automatic rotation (JSON format)
+- **Metrics Logs**: `./logs/metrics_traces.log` with automatic rotation (JSON format, exported every 10 seconds)
 
 Log files rotate when they reach 10MB in size, keeping up to 3 backups. Old logs are compressed.
 
@@ -193,8 +195,10 @@ The application is fully instrumented with OpenTelemetry for tracing and metrics
   - `llm.usage.output_tokens` - Output tokens generated
   - `llm.usage.cache_*` - Cache-related token metrics (Anthropic)
   - All usage fields from API responses automatically extracted
+  - **Written to**: `./logs/metrics_traces.log` for local debugging (exported every 10 seconds)
+  - Also available for OTEL collector to pick up via SDK
 
-**Note**: Traces and metrics are NOT exported to stdout to keep the console output clean and focused on the chat interaction. Traces are written to `./logs/chatbot_traces.log` in JSON format for easy debugging. An OTEL collector running locally can still pick up telemetry data via the SDK.
+**Note**: Traces and metrics are NOT exported to stdout to keep the console output clean and focused on the chat interaction. Traces are written to `./logs/chatbot_traces.log` and metrics to `./logs/metrics_traces.log` in JSON format for easy debugging. An OTEL collector running locally can still pick up telemetry data via the SDK.
 
 **📖 For detailed OpenTelemetry configuration, including:**
 - Complete list of traces and spans
