@@ -145,9 +145,11 @@ ExtraChat/
 ├── go.sum                    # Dependency checksums (generated)
 ├── README.md                 # This file
 ├── OTEL_CONFIGURATION.md     # OpenTelemetry configuration guide
+├── program_prompt.md         # Original requirements specification
 ├── chatbot.db                # SQLite database (generated)
 └── logs/
-    └── chatbot.log           # Application logs (generated)
+    ├── chatbot.log           # Application logs (generated)
+    └── chatbot_traces.log    # OpenTelemetry traces (generated)
 ```
 
 ## Database Schema
@@ -169,7 +171,8 @@ The application creates a SQLite database (`chatbot.db`) with the following sche
 ## Logging
 
 Logs are written to:
-- **File**: `./logs/chatbot.log` with automatic rotation (JSON format)
+- **Application Logs**: `./logs/chatbot.log` with automatic rotation (JSON format)
+- **Trace Logs**: `./logs/chatbot_traces.log` with automatic rotation (JSON format)
 
 Log files rotate when they reach 10MB in size, keeping up to 3 backups. Old logs are compressed.
 
@@ -182,6 +185,8 @@ The application is fully instrumented with OpenTelemetry for tracing and metrics
 - **Traces**: Full request/response cycles for each LLM call
   - Spans for each backend: `anthropic_api_call`, `ollama_api_call`, `grok_api_call`, `openai_api_call`
   - Includes request duration, status codes, and error tracking
+  - **Written to**: `./logs/chatbot_traces.log` for local debugging
+  - Also available for OTEL collector to pick up via SDK
 - **Metrics**:
   - `http.client.request.duration` - HTTP request duration histogram (milliseconds)
   - `llm.usage.input_tokens` - Input tokens consumed
@@ -189,7 +194,7 @@ The application is fully instrumented with OpenTelemetry for tracing and metrics
   - `llm.usage.cache_*` - Cache-related token metrics (Anthropic)
   - All usage fields from API responses automatically extracted
 
-**Note**: Traces and metrics are NOT exported to stdout. Instead, they are designed to be collected by an OTEL collector running locally, which will automatically pick up the telemetry data. This keeps the console output clean and focused on the chat interaction.
+**Note**: Traces and metrics are NOT exported to stdout to keep the console output clean and focused on the chat interaction. Traces are written to `./logs/chatbot_traces.log` in JSON format for easy debugging. An OTEL collector running locally can still pick up telemetry data via the SDK.
 
 **📖 For detailed OpenTelemetry configuration, including:**
 - Complete list of traces and spans
@@ -243,6 +248,19 @@ go fmt ./...
 ```bash
 golangci-lint run
 ```
+
+## Enable Tracaing 
+
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+### OTLP HTTP endpoint (alternative)
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+
+### Service name (override default)
+export OTEL_SERVICE_NAME=chatbot
+
+#### Resource attributes
+export OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production,service.version=1.0.0
 
 ## Troubleshooting
 

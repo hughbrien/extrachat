@@ -17,7 +17,14 @@ The chatbot application is fully instrumented with OpenTelemetry to provide obse
 - **Traces**: Request/response cycles, latency, and distributed tracing
 - **Metrics**: Token usage, cache hit rates, API call durations, and more
 
-By default, telemetry data is **not** exported to stdout to keep the console clean. Instead, the application is designed to work with an OpenTelemetry Collector running locally, which automatically picks up and exports telemetry data to your preferred backend (e.g., Jaeger, Prometheus, Grafana, etc.).
+**Trace Output:**
+- Traces are automatically written to `./logs/chatbot_traces.log` in JSON format for local debugging
+- File uses automatic rotation (10MB limit, 3 backups, compressed)
+- Each trace includes full span details, timings, and attributes
+- Traces are NOT written to stdout to keep the console clean
+
+**OTEL Collector Integration:**
+The application is designed to work with an OpenTelemetry Collector running locally, which can automatically pick up and export telemetry data to your preferred backend (e.g., Jaeger, Prometheus, Grafana, etc.).
 
 ## Default Tracing Configuration
 
@@ -67,6 +74,72 @@ Trace (Request ID: abc123)
 ### Trace Propagation
 
 The application uses W3C Trace Context propagation by default, making it compatible with distributed tracing systems. If you're running multiple services, trace context is automatically propagated across service boundaries.
+
+### Viewing Trace Files for Debugging
+
+Traces are automatically written to `./logs/chatbot_traces.log` in JSON format. Each trace entry contains:
+- Complete span information
+- Trace and span IDs
+- Timestamps and durations
+- Resource attributes
+- Status and error information
+
+**Example Trace Entry:**
+```json
+{
+  "Name": "anthropic_api_call",
+  "SpanContext": {
+    "TraceID": "a1b2c3d4e5f6789012345678901234567",
+    "SpanID": "1234567890abcdef",
+    "TraceFlags": "01",
+    "TraceState": "",
+    "Remote": false
+  },
+  "Parent": {
+    "TraceID": "00000000000000000000000000000000",
+    "SpanID": "0000000000000000",
+    "TraceFlags": "00",
+    "TraceState": "",
+    "Remote": false
+  },
+  "StartTime": "2025-12-16T10:30:00.123456789-05:00",
+  "EndTime": "2025-12-16T10:30:02.234567890-05:00",
+  "Attributes": [
+    {
+      "Key": "service.name",
+      "Value": {
+        "Type": "STRING",
+        "Value": "chatbot"
+      }
+    }
+  ],
+  "Status": {
+    "Code": "Ok",
+    "Description": ""
+  }
+}
+```
+
+**Viewing Traces:**
+```bash
+# View latest traces
+tail -f ./logs/chatbot_traces.log
+
+# Pretty print JSON traces
+cat ./logs/chatbot_traces.log | jq '.'
+
+# Search for specific spans
+grep "anthropic_api_call" ./logs/chatbot_traces.log | jq '.'
+
+# Filter by status (errors only)
+cat ./logs/chatbot_traces.log | jq 'select(.Status.Code == "Error")'
+
+# View traces with specific trace ID
+cat ./logs/chatbot_traces.log | jq 'select(.SpanContext.TraceID == "YOUR_TRACE_ID")'
+```
+
+**Rotating Trace Files:**
+The trace file automatically rotates when it reaches 10MB. Old files are compressed and up to 3 backups are kept.
 
 ## Default Metrics Configuration
 

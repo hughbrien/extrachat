@@ -20,6 +20,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -170,7 +171,8 @@ func initLogger() (*slog.Logger, error) {
 }
 
 // initTelemetry initializes OpenTelemetry tracing and metrics
-// Note: Does not export to stdout - assumes OTEL collector will pick up traces/metrics
+// Traces are exported to ./logs/chatbot_traces.log for debugging
+// OTEL collector can still pick up traces/metrics via the SDK
 func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), error) {
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
@@ -182,9 +184,34 @@ func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), err
 		return nil, nil, nil, fmt.Errorf("failed to create resource: %w", err)
 	}
 
-	// Set up tracer provider without stdout exporter
-	// OTEL collector will pick up traces automatically
+	// Create logs directory for traces
+	logDir := "logs"
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create logs directory: %w", err)
+	}
+
+	// Set up file writer for traces with rotation
+	traceFile := &lumberjack.Logger{
+		Filename:   filepath.Join(logDir, "chatbot_traces.log"),
+		MaxSize:    10, // 10 MB
+		MaxBackups: 3,
+		MaxAge:     28,
+		Compress:   true,
+	}
+
+	// Create trace exporter that writes to file
+	traceExporter, err := stdouttrace.New(
+		stdouttrace.WithWriter(traceFile),
+		stdouttrace.WithPrettyPrint(),
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create trace exporter: %w", err)
+	}
+
+	// Set up tracer provider with file exporter
+	// OTEL collector can still pick up traces via the SDK
 	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
@@ -207,6 +234,9 @@ func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), err
 		}
 		if err := mp.Shutdown(ctx); err != nil {
 			slog.Error("failed to shutdown meter provider", "error", err)
+		}
+		if err := traceFile.Close(); err != nil {
+			slog.Error("failed to close trace file", "error", err)
 		}
 	}
 

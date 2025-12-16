@@ -75,3 +75,5 @@ For example: llama3:latest or llama3:2023-06-01
 - Provide more details on the default tracing provided by the application. Explain and document configuration. 
 - Provide more details on the default metrics provided by the application. Explain and document configuration. 
 - Provide details on configuring the application to ouput to a local OTEL collector.
+
+I need to be able to debug the Trace output and Routing. Can you also write the traces to a log file called ./logs/chatbot_traces.log
