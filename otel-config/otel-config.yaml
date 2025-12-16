@@ -1,0 +1,78 @@
+## Otel Configuration for AppDynamics Java Agent
+## Traces only for now
+
+extensions:
+  health_check:
+    check_collector_pipeline:
+      enabled: true
+      interval: "15s"
+      exporter_failure_threshold: 5
+  pprof:
+    endpoint: localhost:1777
+  zpages:
+    endpoint: localhost:55679
+
+receivers:
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      load: { }
+      memory: { }
+      filesystem: { }
+      network: { }
+      paging: { }
+      # cpu/disk omitted on macOS
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: "node_exporter"
+          static_configs:
+            - targets: [ "localhost:9100" ]   # where node_exporter runs
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+processors:
+  resource:
+    attributes:
+      - key: steelstratus.owner
+        action: upsert
+        value: "hugh.brien"
+      - key: hostname
+        action: upsert
+        value: "steelstratus.com"
+      - key: steelstratus.port
+        action: upsert
+        value: 443
+  batch:
+    timeout: 5s
+    send_batch_size: 5
+
+exporters:
+  debug :
+    verbosity : detailed
+  file/combined :
+    path : ./logs/combined-all.logs
+  file/traces:
+    path: ./logs/traces-all.logs
+  file/logs:
+    path: ./logs/logs-all.logs
+  file/metrics:
+    path: ./logs/metrics-all.logs
+
+service:
+  extensions : [ health_check, pprof, zpages ]
+  pipelines:
+    metrics:
+      receivers: [ prometheus ]
+      exporters: [  file/metrics]
+    traces:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [ file/traces]
+    logs:
+      receivers: [ otlp ]
+      processors: [ resource, batch ]
+      exporters: [  file/logs ]
+

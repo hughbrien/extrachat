@@ -21,7 +21,7 @@ Do not use external dependencies unless explicitly mentioned below; prefer stand
 
 ### Logging
 - Don't send the logs to standard out.   
-- Logs go to a file: ./log/<program_name>.log (e.g., ./log/chatbot.log).
+- Logs go to a file: ./logs/<program_name>.log (e.g., ./logs/chatbot.log).
 - Implement log rolling: Rotate logs every 10MB (use a library like github.com/natefinch/lumberjack for rotation).
 - Use structured logging (e.g., with log/slog in Go stdlib).
 - Logs will picked up OTEL collector automatically running locally 
@@ -68,3 +68,10 @@ Do not use external dependencies unless explicitly mentioned below; prefer stand
 - Include a README.md snippet explaining how to build/run (go build, set env vars).
 - Ensure portability: No OS-specific code; use filepath.Join for paths.
 - Test for efficiency: Keep it lightweight, no unnecessary allocations.
+
+## Updates 
+- Ollama configuration needs to be able to specify LLM using the following : [llm-name:version]
+For example: llama3:latest or llama3:2023-06-01
+- Provide more details on the default tracing provided by the application. Explain and document configuration. 
+- Provide more details on the default metrics provided by the application. Explain and document configuration. 
+- Provide details on configuring the application to ouput to a local OTEL collector.

@@ -84,11 +84,16 @@ Start the chatbot with default settings (Ollama backend):
   - Options: `ollama`, `anthropic`, `grok`, `openai`
 - `--session-id <id>`: Load an existing session
 - `--debug`: Enable debug logging
+- `--ollama-model <model:version>`: Specify Ollama model (default: llama3:latest)
+  - Format: `model:version` (e.g., `llama3:latest`, `codellama:13b`, `mistral:7b`)
 
 Examples:
 ```bash
 # Start with Anthropic backend
 ./chatbot --backend anthropic
+
+# Use specific Ollama model
+./chatbot --backend ollama --ollama-model codellama:13b
 
 # Load existing session
 ./chatbot --session-id session_1234567890
@@ -135,13 +140,14 @@ Goodbye!
 
 ```
 ExtraChat/
-├── main.go           # Main application code
-├── go.mod            # Go module definition
-├── go.sum            # Dependency checksums (generated)
-├── README.md         # This file
-├── chatbot.db        # SQLite database (generated)
-└── log/
-    └── chatbot.log   # Application logs (generated)
+├── main.go                   # Main application code
+├── go.mod                    # Go module definition
+├── go.sum                    # Dependency checksums (generated)
+├── README.md                 # This file
+├── OTEL_CONFIGURATION.md     # OpenTelemetry configuration guide
+├── chatbot.db                # SQLite database (generated)
+└── logs/
+    └── chatbot.log           # Application logs (generated)
 ```
 
 ## Database Schema
@@ -163,7 +169,7 @@ The application creates a SQLite database (`chatbot.db`) with the following sche
 ## Logging
 
 Logs are written to:
-- **File**: `./log/chatbot.log` with automatic rotation (JSON format)
+- **File**: `./logs/chatbot.log` with automatic rotation (JSON format)
 
 Log files rotate when they reach 10MB in size, keeping up to 3 backups. Old logs are compressed.
 
@@ -174,13 +180,25 @@ Note: Logs are NOT written to stdout to keep the console clean for chat interact
 The application is fully instrumented with OpenTelemetry for tracing and metrics:
 
 - **Traces**: Full request/response cycles for each LLM call
+  - Spans for each backend: `anthropic_api_call`, `ollama_api_call`, `grok_api_call`, `openai_api_call`
+  - Includes request duration, status codes, and error tracking
 - **Metrics**:
-  - HTTP request duration (histogram)
-  - Token usage (input_tokens, output_tokens, etc.)
-  - Cache hit/miss rates
-  - All usage fields from API responses
+  - `http.client.request.duration` - HTTP request duration histogram (milliseconds)
+  - `llm.usage.input_tokens` - Input tokens consumed
+  - `llm.usage.output_tokens` - Output tokens generated
+  - `llm.usage.cache_*` - Cache-related token metrics (Anthropic)
+  - All usage fields from API responses automatically extracted
 
 **Note**: Traces and metrics are NOT exported to stdout. Instead, they are designed to be collected by an OTEL collector running locally, which will automatically pick up the telemetry data. This keeps the console output clean and focused on the chat interaction.
+
+**📖 For detailed OpenTelemetry configuration, including:**
+- Complete list of traces and spans
+- All available metrics with descriptions
+- OTEL Collector setup and configuration
+- Integration with Jaeger, Prometheus, and Grafana
+- Troubleshooting guide
+
+**See: [OTEL_CONFIGURATION.md](OTEL_CONFIGURATION.md)**
 
 ## Caching
 

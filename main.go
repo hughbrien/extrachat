@@ -53,9 +53,10 @@ type Session struct {
 
 // Config holds application configuration
 type Config struct {
-	Backend   string
-	SessionID string
-	Debug     bool
+	Backend     string
+	SessionID   string
+	Debug       bool
+	OllamaModel string // Model specification in format "model:version" (e.g., "llama3:latest")
 }
 
 // AnthropicRequest represents the request body for Anthropic API
@@ -142,9 +143,9 @@ type ChatBot struct {
 
 // initLogger initializes structured logging with rotation
 func initLogger() (*slog.Logger, error) {
-	logDir := "log"
+	logDir := "logs"
 	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create log directory: %w", err)
+		return nil, fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
 	logFile := filepath.Join(logDir, "chatbot.log")
@@ -525,7 +526,7 @@ func (cb *ChatBot) callOllama(ctx context.Context, messages []Message) (string, 
 	}
 
 	reqBody := OllamaRequest{
-		Model:    "llama2",
+		Model:    cb.config.OllamaModel,
 		Messages: reqMessages,
 		Stream:   false,
 	}
@@ -898,6 +899,7 @@ func main() {
 	flag.StringVar(&config.Backend, "backend", BackendOllama, "LLM backend (ollama|anthropic|grok|openai)")
 	flag.StringVar(&config.SessionID, "session-id", "", "Load existing session by ID")
 	flag.BoolVar(&config.Debug, "debug", false, "Enable debug logging")
+	flag.StringVar(&config.OllamaModel, "ollama-model", "llama3:latest", "Ollama model specification (format: model:version)")
 	flag.Parse()
 
 	bot, err := NewChatBot(config)

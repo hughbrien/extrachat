@@ -26,7 +26,7 @@ go.work
 chatbot.db
 
 # Log files and directory
-log/
+logs/
 *.log
 
 # Environment variables
