@@ -1,5 +1,49 @@
-### GET request to example server
-GET https://examples.http-client.intellij.net/get
-    ?generated-in=GoLand
+###
+# curl -X POST http://localhost:4318/v1/traces
+#
+POST http://localhost:4318/v1/traces
+Content-Type: application/json
+
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "test-service"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "test-scope"
+          },
+          "spans": [
+            {
+              "traceId": "5b8efff798038103d269b633813fc60c",
+              "spanId": "eee19b7ec3c1b174",
+              "name": "test-operation",
+              "kind": 1,
+              "startTimeUnixNano": "1639033096000000000",
+              "endTimeUnixNano": "1639033097000000000",
+              "attributes": [
+                {
+                  "key": "http.method",
+                  "value": {
+                    "stringValue": "GET"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
 
 ###

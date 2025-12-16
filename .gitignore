@@ -6,6 +6,12 @@
 *.dylib
 chatbot
 chatbot.exe
+env.sh
+.env
+ExtraChat
+chatbot
+main
+
 
 # Test binary, built with `go test -c`
 *.test
