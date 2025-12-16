@@ -68,21 +68,21 @@ processors:
 exporters:
   debug :
     verbosity : detailed
-  file/combined :
-    path : ./logs/combined-all.logs
-  file/traces:
-    path: ./logs/traces-all.logs
   file/logs:
-    path: ./logs/logs-all.logs
+    path: ./logs/extrachat.logs
   file/metrics:
-    path: ./logs/metrics-all.logs
+    path: ./logs/extrachat_metrics.logs
+  file/traces:
+    path: ./logs/extrachat_traces.logs
+
 
 service:
   extensions : [ health_check, pprof, zpages ]
   pipelines:
     metrics:
-      receivers: [ prometheus ]
-      exporters: [  file/metrics]
+      # receivers: [ prometheus ]
+      receivers: [ otlp ]
+      exporters: [ file/metrics]
     traces:
       receivers: [otlp]
       processors: [resource, batch]

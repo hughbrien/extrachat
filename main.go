@@ -194,7 +194,7 @@ func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), err
 
 	// Set up file writer for traces with rotation
 	traceFile := &lumberjack.Logger{
-		Filename:   filepath.Join(logDir, "chatbot_traces.log"),
+		Filename:   filepath.Join(logDir, "extrachat_traces_process.log"),
 		MaxSize:    10, // 10 MB
 		MaxBackups: 3,
 		MaxAge:     28,
@@ -220,7 +220,7 @@ func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), err
 
 	// Set up file writer for metrics with rotation
 	metricsFile := &lumberjack.Logger{
-		Filename:   filepath.Join(logDir, "metrics_traces.log"),
+		Filename:   filepath.Join(logDir, "extrachat_metrics_process.log"),
 		MaxSize:    10, // 10 MB
 		MaxBackups: 3,
 		MaxAge:     28,
