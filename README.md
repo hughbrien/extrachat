@@ -113,6 +113,11 @@ While chatting, you can use these commands:
 - `/new-session` - Start a new chat session
 - `/switch <backend>` - Switch to a different LLM backend
   - Example: `/switch anthropic`
+- `/list-ollama-models` - List all available Ollama models
+  - Shows model names with sizes and indicates the current model
+- `/set-ollama-model <model>` - Change the Ollama model
+  - Example: `/set-ollama-model codellama:13b`
+  - Example: `/set-ollama-model mistral:7b`
 - `/help` - Show available commands
 
 ### Example Session
@@ -409,6 +414,8 @@ The application is designed to be lightweight and efficient:
 - Connection pooling for HTTP clients
 - Efficient caching to reduce API calls
 - Async operations for I/O-bound tasks
+
+
 
 ## License
 

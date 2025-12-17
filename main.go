@@ -101,6 +101,19 @@ type OllamaResponse struct {
 	Done bool `json:"done"`
 }
 
+// OllamaTagsResponse represents the response from Ollama /api/tags endpoint
+type OllamaTagsResponse struct {
+	Models []OllamaModel `json:"models"`
+}
+
+// OllamaModel represents a single model in the Ollama tags response
+type OllamaModel struct {
+	Name       string `json:"name"`
+	ModifiedAt string `json:"modified_at"`
+	Size       int64  `json:"size"`
+	Digest     string `json:"digest"`
+}
+
 // OpenAIRequest represents the request body for OpenAI-compatible APIs
 type OpenAIRequest struct {
 	Model    string              `json:"model"`
@@ -786,6 +799,36 @@ func (cb *ChatBot) callOpenAI(ctx context.Context, messages []Message) (string, 
 	return "", fmt.Errorf("empty response from OpenAI")
 }
 
+// listOllamaModels fetches the list of available Ollama models
+func (cb *ChatBot) listOllamaModels(ctx context.Context) ([]OllamaModel, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost:11434/api/tags", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := cb.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request (is Ollama running?): %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API error: %s - %s", resp.Status, string(body))
+	}
+
+	var tagsResp OllamaTagsResponse
+	if err := json.Unmarshal(body, &tagsResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return tagsResp.Models, nil
+}
+
 // sendMessage sends a message to the current backend
 func (cb *ChatBot) sendMessage(ctx context.Context, userMessage string) (string, error) {
 	cb.mu.Lock()
@@ -885,12 +928,43 @@ func (cb *ChatBot) handleCommand(cmd string) (bool, error) {
 		}
 		return false, nil
 
+	case "/list-ollama-models":
+		ctx := context.Background()
+		models, err := cb.listOllamaModels(ctx)
+		if err != nil {
+			return false, fmt.Errorf("failed to list Ollama models: %w", err)
+		}
+		fmt.Println("\nAvailable Ollama models:")
+		for i, model := range models {
+			sizeGB := float64(model.Size) / (1024 * 1024 * 1024)
+			current := ""
+			if model.Name == cb.config.OllamaModel {
+				current = " (current)"
+			}
+			fmt.Printf("%d. %s - %.2f GB%s\n", i+1, model.Name, sizeGB, current)
+		}
+		fmt.Println()
+		return false, nil
+
+	case "/set-ollama-model":
+		if len(parts) < 2 {
+			return false, fmt.Errorf("usage: /set-ollama-model <model:version>")
+		}
+		modelName := parts[1]
+		cb.mu.Lock()
+		cb.config.OllamaModel = modelName
+		cb.mu.Unlock()
+		fmt.Printf("Ollama model set to: %s\n", modelName)
+		return false, nil
+
 	case "/help":
 		fmt.Println("Available commands:")
-		fmt.Println("  /quit, /exit        - Exit the chatbot")
-		fmt.Println("  /new-session        - Start a new chat session")
-		fmt.Println("  /switch <backend>   - Switch LLM backend (ollama|anthropic|grok|openai)")
-		fmt.Println("  /help               - Show this help message")
+		fmt.Println("  /quit, /exit              - Exit the chatbot")
+		fmt.Println("  /new-session              - Start a new chat session")
+		fmt.Println("  /switch <backend>         - Switch LLM backend (ollama|anthropic|grok|openai)")
+		fmt.Println("  /list-ollama-models       - List available Ollama models")
+		fmt.Println("  /set-ollama-model <model> - Set Ollama model (e.g., llama3:latest)")
+		fmt.Println("  /help                     - Show this help message")
 		return false, nil
 
 	default:
