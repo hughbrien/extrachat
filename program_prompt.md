@@ -38,7 +38,7 @@ Do not use external dependencies unless explicitly mentioned below; prefer stand
         - Handle Anthropic-specific fields like cache_creation.ephemeral_5m_input_tokens.
 - Use OTEL semantic conventions for naming (e.g., http.client.request.duration).
 
-### API Integration Details
+### Anthropic API Integration Details
 - For Anthropic: Use the exact HTTP interface provided:
   curl https://api.anthropic.com/v1/messages \
   --header "x-api-key: $ANTHROPIC_API_KEY" \
@@ -50,6 +50,29 @@ Do not use external dependencies unless explicitly mentioned below; prefer stand
 - For Grok and OpenAI: Use OpenAI-compatible chat completions endpoint.
 - API keys loaded from environment variables (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY, GROK_API_KEY).
 - Cache requests: Use a hash of the messages as key; check cache before API call, store response if miss.
+
+
+### Grok API Integration 
+```
+curl https://api.x.ai/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $GROK_API_KEY" \
+-d '{
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a test assistant."
+            },{
+                    "role": "user",
+                    "content": "Testing. Just say hi and hello world and nothing else."
+            }
+         ],
+        "model": "grok-4-latest",
+        "stream": false,
+        "temperature": 0
+}'
+
+```
 
 ### Database
 - Use SQLite for persistence: Create tables for sessions (id, start_time, backend) and messages (session_id, role, content, timestamp).
@@ -77,6 +100,9 @@ For example: llama3:latest or llama3:2023-06-01
 - Provide details on configuring the application to ouput to a local OTEL collector.
 - I need to be able to debug the Trace output and Routing. Can you also write the traces to a log file called ./logs/chatbot_traces.log
 
-## New Items 
+## Items  
 - I need to be able to debug the metric  output and routing. Can you also write the metrics to a log file called ./logs/metrics_traces.log
 
+## New Items 
+- Add Grok option to the LLM selection. 
+- Add the ability to select from any of the current ollama LLM that are available.
