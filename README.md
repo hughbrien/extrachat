@@ -140,17 +140,21 @@ Goodbye!
 
 ```
 ExtraChat/
-├── main.go                   # Main application code
-├── go.mod                    # Go module definition
-├── go.sum                    # Dependency checksums (generated)
-├── README.md                 # This file
-├── OTEL_CONFIGURATION.md     # OpenTelemetry configuration guide
-├── program_prompt.md         # Original requirements specification
-├── chatbot.db                # SQLite database (generated)
+├── main.go                        # Main application code
+├── go.mod                         # Go module definition
+├── go.sum                         # Dependency checksums (generated)
+├── README.md                      # This file
+├── program_prompt.md              # Original requirements specification
+├── chatbot.db                     # SQLite database (generated)
+├── otel-config/
+│   └── otel-config.yaml           # OTEL collector configuration
 └── logs/
-    ├── chatbot.log           # Application logs (generated)
-    ├── chatbot_traces.log    # OpenTelemetry traces (generated)
-    └── metrics_traces.log    # OpenTelemetry metrics (generated)
+    ├── chatbot.log                # Application logs (generated)
+    ├── extrachat_traces_process.log   # OpenTelemetry traces (generated)
+    ├── extrachat_metrics_process.log  # OpenTelemetry metrics (generated)
+    ├── extrachat.logs             # OTEL collector logs (generated)
+    ├── extrachat_metrics.logs     # OTEL collector metrics (generated)
+    └── extrachat_traces.logs      # OTEL collector traces (generated)
 ```
 
 ## Database Schema
@@ -173,41 +177,172 @@ The application creates a SQLite database (`chatbot.db`) with the following sche
 
 Logs are written to:
 - **Application Logs**: `./logs/chatbot.log` with automatic rotation (JSON format)
-- **Trace Logs**: `./logs/chatbot_traces.log` with automatic rotation (JSON format)
-- **Metrics Logs**: `./logs/metrics_traces.log` with automatic rotation (JSON format, exported every 10 seconds)
+- **Trace Logs**: `./logs/extrachat_traces_process.log` with automatic rotation (JSON format)
+- **Metrics Logs**: `./logs/extrachat_metrics_process.log` with automatic rotation (JSON format, exported every 10 seconds)
 
 Log files rotate when they reach 10MB in size, keeping up to 3 backups. Old logs are compressed.
 
-Note: Logs are NOT written to stdout to keep the console clean for chat interactions. The OTEL collector running locally will automatically pick up log data.
+Note: Logs are NOT written to stdout to keep the console clean for chat interactions. The OTEL collector running locally will automatically pick up log data and export to its configured destinations.
 
 ## OpenTelemetry
 
 The application is fully instrumented with OpenTelemetry for tracing and metrics:
 
-- **Traces**: Full request/response cycles for each LLM call
-  - Spans for each backend: `anthropic_api_call`, `ollama_api_call`, `grok_api_call`, `openai_api_call`
-  - Includes request duration, status codes, and error tracking
-  - **Written to**: `./logs/chatbot_traces.log` for local debugging
-  - Also available for OTEL collector to pick up via SDK
-- **Metrics**:
-  - `http.client.request.duration` - HTTP request duration histogram (milliseconds)
-  - `llm.usage.input_tokens` - Input tokens consumed
-  - `llm.usage.output_tokens` - Output tokens generated
-  - `llm.usage.cache_*` - Cache-related token metrics (Anthropic)
-  - All usage fields from API responses automatically extracted
-  - **Written to**: `./logs/metrics_traces.log` for local debugging (exported every 10 seconds)
-  - Also available for OTEL collector to pick up via SDK
+### Traces
 
-**Note**: Traces and metrics are NOT exported to stdout to keep the console output clean and focused on the chat interaction. Traces are written to `./logs/chatbot_traces.log` and metrics to `./logs/metrics_traces.log` in JSON format for easy debugging. An OTEL collector running locally can still pick up telemetry data via the SDK.
+Full request/response cycles for each LLM call are automatically traced:
 
-**📖 For detailed OpenTelemetry configuration, including:**
-- Complete list of traces and spans
-- All available metrics with descriptions
-- OTEL Collector setup and configuration
-- Integration with Jaeger, Prometheus, and Grafana
-- Troubleshooting guide
+**Spans Created:**
+- `anthropic_api_call` - Anthropic Claude API requests
+- `ollama_api_call` - Ollama local model requests
+- `grok_api_call` - xAI Grok API requests
+- `openai_api_call` - OpenAI API requests
 
-**See: [OTEL_CONFIGURATION.md](OTEL_CONFIGURATION.md)**
+Each span includes:
+- Request duration and timing
+- HTTP status codes
+- Error tracking
+- Service name and version attributes
+
+**Trace Output:**
+- Automatically written to `./logs/extrachat_traces_process.log` in JSON format
+- File uses automatic rotation (10MB limit, 3 backups, compressed)
+- NOT written to stdout to keep console clean
+- Available for OTEL collector to pick up via SDK
+
+**Viewing Traces:**
+```bash
+# View latest traces
+tail -f ./logs/extrachat_traces_process.log
+
+# Pretty print JSON traces
+cat ./logs/extrachat_traces_process.log | jq '.'
+
+# Search for specific spans
+grep "anthropic_api_call" ./logs/extrachat_traces_process.log | jq '.'
+
+# Filter by errors only
+cat ./logs/extrachat_traces_process.log | jq 'select(.Status.Code == "Error")'
+```
+
+### Metrics
+
+The chatbot automatically collects performance and usage metrics:
+
+**HTTP Request Metrics:**
+- `http.client.request.duration` - HTTP request duration histogram (milliseconds)
+  - Labels: backend, status code
+  - Tracks latency for all LLM API calls
+
+**LLM Usage Metrics:**
+- `llm.usage.input_tokens` - Input tokens processed
+- `llm.usage.output_tokens` - Tokens generated
+- `llm.usage.cache_creation_input_tokens` - Tokens used for cache creation
+- `llm.usage.cache_read_input_tokens` - Tokens read from cache
+- `llm.usage.cache_creation.ephemeral_5m_input_tokens` - Ephemeral cache (5-min TTL)
+- `llm.usage.cache_creation.ephemeral_1h_input_tokens` - Ephemeral cache (1-hour TTL)
+- `llm.usage.prompt_tokens` - Tokens in prompt (OpenAI/Grok)
+- `llm.usage.completion_tokens` - Tokens in completion (OpenAI/Grok)
+- `llm.usage.total_tokens` - Total tokens used (OpenAI/Grok)
+
+**Metrics Output:**
+- Automatically written to `./logs/extrachat_metrics_process.log` in JSON format
+- Exported every 10 seconds
+- File uses automatic rotation (10MB limit, 3 backups, compressed)
+- NOT written to stdout to keep console clean
+- Available for OTEL collector to pick up via SDK
+
+**Viewing Metrics:**
+```bash
+# View latest metrics
+tail -f ./logs/extrachat_metrics_process.log
+
+# Pretty print JSON metrics
+cat ./logs/extrachat_metrics_process.log | jq '.'
+
+# Extract specific metric
+cat ./logs/extrachat_metrics_process.log | jq '.ScopeMetrics[].Metrics[] | select(.Name == "http.client.request.duration")'
+
+# Get all LLM usage metrics
+cat ./logs/extrachat_metrics_process.log | jq '.ScopeMetrics[].Metrics[] | select(.Name | startswith("llm.usage"))'
+
+# Calculate average request duration
+cat ./logs/extrachat_metrics_process.log | jq '.ScopeMetrics[].Metrics[] | select(.Name == "http.client.request.duration") | .Data.DataPoints[0] | .Sum / .Count'
+```
+
+### OTEL Collector Setup
+
+The application works with an OpenTelemetry Collector for advanced observability.
+
+**Installing via Docker (Recommended):**
+```bash
+# Pull and run the OTEL Collector
+docker pull otel/opentelemetry-collector:latest
+
+docker run -d \
+  --name otel-collector \
+  -p 4317:4317 \
+  -p 4318:4318 \
+  -p 55679:55679 \
+  -v $(pwd)/otel-config/otel-config.yaml:/etc/otel-collector-config.yaml \
+  otel/opentelemetry-collector:latest \
+  --config=/etc/otel-collector-config.yaml
+```
+
+**Configuration File:** See `otel-config/otel-config.yaml` for the collector configuration.
+
+**Environment Variables (Optional):**
+```bash
+# OTLP gRPC endpoint (default: localhost:4317)
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+# OTLP HTTP endpoint (alternative)
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+
+# Service name (override default)
+export OTEL_SERVICE_NAME=chatbot
+
+# Resource attributes
+export OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production,service.version=1.0.0
+```
+
+### Integration with Observability Tools
+
+**Jaeger (Distributed Tracing):**
+```bash
+# Run Jaeger
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 14250:14250 \
+  jaegertracing/all-in-one:latest
+
+# Access UI at http://localhost:16686
+```
+
+**Prometheus & Grafana (Metrics):**
+```bash
+# Run Prometheus
+docker run -d --name prometheus \
+  -p 9090:9090 \
+  -v $(pwd)/prometheus.yml:/etc/prometheus/prometheus.yml \
+  prom/prometheus
+
+# Run Grafana
+docker run -d --name grafana \
+  -p 3000:3000 \
+  grafana/grafana
+
+# Access Grafana at http://localhost:3000
+```
+
+**Prometheus Configuration (`prometheus.yml`):**
+```yaml
+scrape_configs:
+  - job_name: 'chatbot'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['localhost:8889']
+```
 
 ## Caching
 
@@ -252,19 +387,6 @@ go fmt ./...
 ```bash
 golangci-lint run
 ```
-
-## Enable Tracaing 
-
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-
-### OTLP HTTP endpoint (alternative)
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-
-### Service name (override default)
-export OTEL_SERVICE_NAME=chatbot
-
-#### Resource attributes
-export OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production,service.version=1.0.0
 
 ## Troubleshooting
 
