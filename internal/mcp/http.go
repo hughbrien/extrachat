@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -48,9 +50,15 @@ func (c *HTTPClient) Name() string {
 // Initialize establishes connection to MCP server
 func (c *HTTPClient) Initialize(ctx context.Context) error {
 	params := InitializeParams{
+		ProtocolVersion: "2024-11-05",
+		Capabilities: ClientCapabilities{
+			Roots: &RootsCapability{
+				ListChanged: false,
+			},
+		},
 		ClientInfo: ClientInfo{
 			Name:    "extrachat",
-			Version: "1.0.0",
+			Version: "1.1.0",
 		},
 	}
 
@@ -59,7 +67,10 @@ func (c *HTTPClient) Initialize(ctx context.Context) error {
 		return fmt.Errorf("initialize failed: %w", err)
 	}
 
-	c.logger.Info("MCP server initialized", "server", result.ServerInfo.Name, "version", result.ServerInfo.Version)
+	c.logger.Info("MCP server initialized",
+		"server", result.ServerInfo.Name,
+		"version", result.ServerInfo.Version,
+		"protocol", result.ProtocolVersion)
 	return nil
 }
 
@@ -132,6 +143,7 @@ func (c *HTTPClient) sendRequest(ctx context.Context, method string, params inte
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 
 	// Send request
 	httpResp, err := c.httpClient.Do(httpReq)
@@ -146,10 +158,22 @@ func (c *HTTPClient) sendRequest(ctx context.Context, method string, params inte
 		return fmt.Errorf("HTTP error %d: %s", httpResp.StatusCode, string(body))
 	}
 
-	// Read response body
-	responseJSON, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+	var responseJSON []byte
+
+	// Check if response is Server-Sent Events (SSE)
+	contentType := httpResp.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "text/event-stream") {
+		// Parse SSE format
+		responseJSON, err = c.parseSSEResponse(httpResp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to parse SSE response: %w", err)
+		}
+	} else {
+		// Read plain JSON response
+		responseJSON, err = io.ReadAll(httpResp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read response: %w", err)
+		}
 	}
 
 	// Parse JSON-RPC response
@@ -175,4 +199,40 @@ func (c *HTTPClient) sendRequest(ctx context.Context, method string, params inte
 	}
 
 	return nil
+}
+
+// parseSSEResponse parses Server-Sent Events (SSE) format and extracts JSON data
+// SSE format:
+//
+//	event: message
+//	data: {"jsonrpc":"2.0",...}
+func (c *HTTPClient) parseSSEResponse(body io.Reader) ([]byte, error) {
+	scanner := bufio.NewScanner(body)
+	var dataLines []string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Skip empty lines and event lines
+		if line == "" || strings.HasPrefix(line, "event:") {
+			continue
+		}
+
+		// Extract data from "data: " prefix
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			dataLines = append(dataLines, data)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanner error: %w", err)
+	}
+
+	if len(dataLines) == 0 {
+		return nil, fmt.Errorf("no data found in SSE response")
+	}
+
+	// Join all data lines (in case data is split across multiple lines)
+	return []byte(strings.Join(dataLines, "\n")), nil
 }

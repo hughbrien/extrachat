@@ -1,126 +1,280 @@
-# Go Chatbot
+# Go Chatbot - Technical Specification
 
-You are an expert Go developer tasked with building a command-line chat bot application in Go. 
-The program must be multi-threaded, portable across Windows, Linux, and macOS, and adhere strictly to the following requirements. 
-Use Go 1.23 or later for modern features like generics and error handling. 
-Ensure the code is efficient, idiomatic, and well-commented. 
-Handle errors gracefully with logging. 
-Do not use external dependencies unless explicitly mentioned below; prefer standard library where possible.
+## Overview
 
-### Core Functionality
-- The bot is a command-line application that interacts with the user via stdin/stdout, allowing multi-turn conversations (chat sessions).
-- It supports multiple LLM backends:
-    - Initial/default configuration: Local Ollama (via HTTP API at http://localhost:11434/api/chat or equivalent; assume Ollama is running locally).
-    - Anthropic Developer API (using the provided HTTP interface example).
-    - Grok API (use xAI's API endpoint at https://api.grok.x.ai/v1/chat/completions or equivalent; assume standard OpenAI-compatible format).
-    - OpenAI standard API (as a fallback or additional option; endpoint https://api.openai.com/v1/chat/completions).
-- The user can switch backends via command-line flags or in-chat commands (e.g., "/switch ollama", "/switch anthropic").
-- Cache all requests and responses using an in-memory cache (e.g., with sync.Map for thread-safety) and persist to SQLite for long-term storage.
-- Persist all requests/responses as sessions in the latest SQLite database (use github.com/mattn/go-sqlite3). Each session has a unique ID, timestamp, backend used, and a list of message exchanges.
-- Make the application multi-threaded: Use goroutines for concurrent API calls, logging, and metrics collection to handle multiple sessions or background tasks efficiently.
+You are an expert Go developer tasked with building a command-line chat bot application in Go. The program must be multi-threaded, portable across Windows, Linux, and macOS, and adhere strictly to the following requirements. Use Go 1.23 or later for modern features like generics and error handling. Ensure the code is efficient, idiomatic, and well-commented. Handle errors gracefully with logging.
 
-### Logging
-- Don't send the logs to standard out.   
-- Logs go to a file: ./logs/<program_name>.log (e.g., ./logs/chatbot.log).
-- Implement log rolling: Rotate logs every 10MB (use a library like github.com/natefinch/lumberjack for rotation).
-- Use structured logging (e.g., with log/slog in Go stdlib).
-- Logs will picked up OTEL collector automatically running locally 
-- 
+**Principle**: Do not use external dependencies unless explicitly mentioned; prefer standard library where possible.
 
-### Tracing and Metrics with OpenTelemetry (OTEL)
-- Trace all LLM calls using OpenTelemetry (use go.opentelemetry.io/otel for tracing and metrics).
-- Do not send  traces and metrics to stdout (console exporter) for simplicity; assume OTEL collector is optional.
-- For each request/response:
-    - Create a span for the full request cycle.
-    - Record response time as an OTEL metric (e.g., histogram for latency in milliseconds).
-    - From the response JSON (for all backends where applicable, especially Anthropic):
-        - Extract and create OTEL metrics (gauges or counters) for each integer value under the "usage" key (e.g., input_tokens, output_tokens, cache_creation_input_tokens, etc.).
-        - Handle Anthropic-specific fields like cache_creation.ephemeral_5m_input_tokens.
-- Use OTEL semantic conventions for naming (e.g., http.client.request.duration).
+---
 
-### Anthropic API Integration Details
-- For Anthropic: Use the exact HTTP interface provided:
-  curl https://api.anthropic.com/v1/messages \
-  --header "x-api-key: $ANTHROPIC_API_KEY" \
-  --header "anthropic-version: 2023-06-01" \
-  --header "content-type: application/json" \
-  --data '{"model": "claude-sonnet-4-20250514", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello, world"}]}'
-- Parse the response JSON as shown, extracting "content" for the bot's reply and "usage" for metrics.
-- For Ollama: Use local HTTP API (POST to /api/chat with JSON body similar to OpenAI format).
-- For Grok and OpenAI: Use OpenAI-compatible chat completions endpoint.
-- API keys loaded from environment variables (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY, GROK_API_KEY).
-- Cache requests: Use a hash of the messages as key; check cache before API call, store response if miss.
+## Core Requirements
 
+### Functionality
+- Command-line application that interacts via stdin/stdout
+- Multi-turn conversation support (chat sessions)
+- Multi-threaded architecture using goroutines for:
+  - Concurrent API calls
+  - Background logging
+  - Metrics collection
+  - Multiple session handling
+- Backend switching via command-line flags or in-chat commands
+- Request/response caching (in-memory and persistent)
 
-### Grok API Integration 
+### Portability
+- Cross-platform: Windows, Linux, macOS
+- No OS-specific code
+- Use `filepath.Join` for all path operations
+- Lightweight with minimal allocations
+
+---
+
+## LLM Backends
+
+The chatbot supports multiple LLM backends that can be switched dynamically:
+
+### 1. Ollama (Default)
+- **Endpoint**: `http://localhost:11434/api/chat`
+- **Configuration**: Specify model using format `[llm-name:version]`
+  - Examples: `llama3:latest`, `llama3:2023-06-01`
+- **Features**:
+  - Ability to list all available Ollama models
+  - Model selection from available models
+- **Assumption**: Ollama running locally
+
+### 2. Anthropic Claude
+- **Endpoint**: `https://api.anthropic.com/v1/messages`
+- **Headers**:
+  ```
+  x-api-key: $ANTHROPIC_API_KEY
+  anthropic-version: 2023-06-01
+  content-type: application/json
+  ```
+- **Request Format**:
+  ```json
+  {
+    "model": "claude-sonnet-4-20250514",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello, world"}]
+  }
+  ```
+- **Response**: Extract `content` for bot reply and `usage` for metrics
+- **Special Handling**: Parse cache-related fields (e.g., `cache_creation.ephemeral_5m_input_tokens`)
+
+### 3. Grok (xAI)
+- **Endpoint**: `https://api.x.ai/v1/chat/completions`
+- **Headers**:
+  ```
+  Content-Type: application/json
+  Authorization: Bearer $GROK_API_KEY
+  ```
+- **Request Format**: OpenAI-compatible
+  ```json
+  {
+    "model": "grok-4-latest",
+    "messages": [
+      {"role": "system", "content": "You are a test assistant."},
+      {"role": "user", "content": "Testing."}
+    ],
+    "stream": false,
+    "temperature": 0
+  }
+  ```
+
+### 4. OpenAI
+- **Endpoint**: `https://api.openai.com/v1/chat/completions`
+- **Format**: Standard OpenAI chat completions API
+- **Headers**: `Authorization: Bearer $OPENAI_API_KEY`
+
+### Backend Configuration
+- API keys loaded from environment variables:
+  - `ANTHROPIC_API_KEY`
+  - `OPENAI_API_KEY`
+  - `GROK_API_KEY`
+- Switch backends using:
+  - Command-line flag: `--backend [ollama|anthropic|grok|openai]`
+  - In-chat commands: `/switch ollama`, `/switch anthropic`, `/switch grok`, `/switch openai`
+
+---
+
+## Model Context Protocol (MCP) Client
+
+### Overview
+Implement an MCP client that handles both LOCAL and REMOTE MCP servers for extending chatbot capabilities.
+
+### Server Types
+
+#### Local MCP Servers
+- Support for local MCP servers (e.g., Python-based)
+- STDIO-based communication
+- Process management for local server lifecycle
+
+#### Remote MCP Servers
+- HTTP/WebSocket connections to remote servers
+- Format: `http://{HOST_NAME}:{PORT}` or `ws://{HOST_NAME}:{PORT}`
+- Connection pooling and retry logic
+
+### Features
+- **Service Discovery**: List all configured MCP services
+- **Service Details**: Provide detailed information about each MCP connection (status, capabilities, endpoints)
+- **Built-in Services**: Include "Search the Web" in the MCP service list
+- **Multi-protocol Support**: STDIO, HTTP, and WebSocket transports
+
+### Integration
+- MCP calls should be traceable via OpenTelemetry
+- Responses cached similar to LLM responses
+- Error handling with fallback mechanisms
+
+---
+
+## Data Persistence
+
+### In-Memory Cache
+- Use `sync.Map` for thread-safe caching
+- Cache key: Hash of message array
+- Check cache before making API calls
+- Store responses on cache miss
+
+### SQLite Database
+- **Library**: `github.com/mattn/go-sqlite3`
+- **Tables**:
+  - `sessions`: id, start_time, backend, created_at
+  - `messages`: session_id, role, content, timestamp
+- **Persistence**: Save sessions on exit or periodically
+- **Session Management**: Unique ID per session with timestamp tracking
+
+---
+
+## Logging
+
+### Configuration
+- **DO NOT** output logs to stdout
+- **Log File**: `./logs/chatbot.log`
+- **Rotation**: Every 10MB using `github.com/natefinch/lumberjack`
+- **Format**: Structured logging with `log/slog` (Go stdlib)
+- **Collection**: OTEL collector picks up logs automatically when running locally
+
+### Log Files
+- `./logs/chatbot.log` - Main application logs
+- `./logs/chatbot_traces.log` - Trace output for debugging
+- `./logs/metrics_traces.log` - Metrics output for debugging
+
+---
+
+## Observability (OpenTelemetry)
+
+### Tracing
+- **Library**: `go.opentelemetry.io/otel`
+- **DO NOT** send traces to stdout
+- Trace all LLM API calls with spans
+- Span details:
+  - Full request/response cycle
+  - Backend used
+  - Model selected
+  - Error status
+- **Debug Output**: Write traces to `./logs/chatbot_traces.log`
+- **Collection**: Assume OTEL collector running locally picks up traces automatically
+
+### Metrics
+- **DO NOT** send metrics to stdout
+- **Response Time**: Histogram for latency in milliseconds
+- **Usage Metrics**: From response JSON `usage` field
+  - Extract all integer values (input_tokens, output_tokens, etc.)
+  - Create gauges or counters for each metric
+  - Handle provider-specific fields (e.g., Anthropic cache fields)
+- **Naming**: Use OTEL semantic conventions (e.g., `http.client.request.duration`)
+- **Debug Output**: Write metrics to `./logs/metrics_traces.log`
+- **Collection**: Assume OTEL collector running locally picks up metrics automatically
+
+### OTEL Collector Configuration
+- Application configured to work with local OTEL collector
+- No stdout exporters (console exporters removed)
+- Collector handles all telemetry routing and export
+- See README.md for collector setup details
+
+---
+
+## Command-Line Interface
+
+### Execution
+```bash
+./chatbot [flags]
 ```
-curl https://api.x.ai/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $GROK_API_KEY" \
--d '{
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a test assistant."
-            },{
-                    "role": "user",
-                    "content": "Testing. Just say hi and hello world and nothing else."
-            }
-         ],
-        "model": "grok-4-latest",
-        "stream": false,
-        "temperature": 0
-}'
 
+### Flags
+- `--backend [ollama|anthropic|grok|openai]` - Select LLM backend (default: ollama)
+- `--session-id <id>` - Load existing session
+- `--debug` - Enable verbose logging
+
+### In-Chat Commands
+- `/quit` - Exit the chatbot
+- `/new-session` - Start a new chat session
+- `/switch <backend>` - Switch to different LLM backend
+  - Examples: `/switch ollama`, `/switch anthropic`, `/switch grok`, `/switch openai`
+
+### User Interaction
+- User types messages via stdin
+- Bot responds via stdout
+- Clean console output (no logs or telemetry in stdout)
+- Multi-turn conversation within sessions
+
+---
+
+## Dependencies
+
+### Required External Libraries
+- `github.com/mattn/go-sqlite3` - SQLite database driver
+- `github.com/natefinch/lumberjack` - Log rotation
+- `go.opentelemetry.io/otel` - OpenTelemetry core
+- `go.opentelemetry.io/otel/trace` - Tracing support
+- `go.opentelemetry.io/otel/metric` - Metrics support
+- `go.opentelemetry.io/otel/sdk` - OTEL SDK components
+
+### Standard Library
+Prefer standard library where possible:
+- `net/http` - HTTP client
+- `encoding/json` - JSON handling
+- `os` - Environment and file operations
+- `fmt` - Formatting
+- `time` - Timestamps
+- `sync` - Concurrency primitives
+- `log/slog` - Structured logging
+
+---
+
+## Build and Deployment
+
+### Code Organization
+- Use standard Go project layout:
+  - `cmd/chatbot/` - Main application
+  - `internal/` - Internal packages
+  - `pkg/` - Public packages (if needed)
+
+### Build Instructions
+```bash
+go build -o chatbot ./cmd/chatbot
 ```
 
-### Database
-- Use SQLite for persistence: Create tables for sessions (id, start_time, backend) and messages (session_id, role, content, timestamp).
-- Store sessions on exit or periodically.
+### Environment Variables
+Required before running:
+```bash
+export ANTHROPIC_API_KEY="your-key-here"
+export OPENAI_API_KEY="your-key-here"
+export GROK_API_KEY="your-key-here"
+```
 
-### Command-Line Interface
-- Run as: ./chatbot [flags]
-- Flags: --backend (default: ollama), --session-id (load existing), --debug (verbose logging).
-- In chat: User types messages; bot responds. Support /quit, /new-session, /switch <backend>.
+### Documentation
+- Include README.md with:
+  - Build instructions
+  - Environment variable setup
+  - Usage examples
+  - OTEL collector configuration
+  - Tracing and metrics documentation
+  - MCP server configuration
 
-### Dependencies
-- Only use: net/http, encoding/json, os, fmt, time, sync, github.com/mattn/go-sqlite3, github.com/natefinch/lumberjack (for log rotation), go.opentelemetry.io/otel and its submodules (trace, metric, export).
-
-### Output
-- Provide the complete, runnable Go code in a single main.go file.
-- Include a README.md snippet explaining how to build/run (go build, set env vars).
-- Ensure portability: No OS-specific code; use filepath.Join for paths.
-- Test for efficiency: Keep it lightweight, no unnecessary allocations.
-
-## Updates 
-- Ollama configuration needs to be able to specify LLM using the following : [llm-name:version]
-For example: llama3:latest or llama3:2023-06-01
-- Provide more details on the default tracing provided by the application. Explain and document configuration. 
-- Provide more details on the default metrics provided by the application. Explain and document configuration.
-- Provide details on configuring the application to ouput to a local OTEL collector.
-- I need to be able to debug the Trace output and Routing. Can you also write the traces to a log file called ./logs/chatbot_traces.log
-
-## Items  
-- I need to be able to debug the metric  output and routing. Can you also write the metrics to a log file called ./logs/metrics_traces.log
-- Add Grok option to the LLM selection. 
-- Add the ability to select from any of the current ollama LLM that are available.
-
-# MCP Client 
-
-Add a Model Context Protocol (MCP) client that will handle both LOCAL and REMOTE requests
-This will be used to call any MCP Server
-
-Call a Local  MCP server written in Python
-Call a Remote MCP server that is listening on http://127.0.0.1:3000
-
-Create list of MCP services.
-Provide the ability to get additional details on each MCP connection
-
-Include "Search the Web" in the MCP list.
-
-
-# OR let Claude automatically call them:
-You: What's the weather like in San Francisco? 
-
-
-
+### Code Quality
+- Efficient and idiomatic Go code
+- Well-commented for clarity
+- Graceful error handling
+- Comprehensive logging
+- Thread-safe operations

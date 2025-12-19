@@ -55,9 +55,15 @@ func (c *WebSocketClient) Name() string {
 // Initialize establishes connection to MCP server
 func (c *WebSocketClient) Initialize(ctx context.Context) error {
 	params := InitializeParams{
+		ProtocolVersion: "2024-11-05",
+		Capabilities: ClientCapabilities{
+			Roots: &RootsCapability{
+				ListChanged: false,
+			},
+		},
 		ClientInfo: ClientInfo{
 			Name:    "extrachat",
-			Version: "1.0.0",
+			Version: "1.1.0",
 		},
 	}
 
@@ -66,7 +72,10 @@ func (c *WebSocketClient) Initialize(ctx context.Context) error {
 		return fmt.Errorf("initialize failed: %w", err)
 	}
 
-	c.logger.Info("MCP server initialized", "server", result.ServerInfo.Name, "version", result.ServerInfo.Version)
+	c.logger.Info("MCP server initialized",
+		"server", result.ServerInfo.Name,
+		"version", result.ServerInfo.Version,
+		"protocol", result.ProtocolVersion)
 	return nil
 }
 

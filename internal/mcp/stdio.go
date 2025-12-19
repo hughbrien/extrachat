@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -27,13 +28,27 @@ type StdioClient struct {
 }
 
 // NewStdioClient creates a new stdio-based MCP client for local Python servers
+// pythonScript can be:
+//   - Just a script path: "/path/to/script.py" (uses python3)
+//   - Python interpreter and script: "/path/to/python /path/to/script.py"
 func NewStdioClient(name string, pythonScript string, logger *slog.Logger) (*StdioClient, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("logger cannot be nil")
 	}
 
-	// Start Python MCP server process
-	cmd := exec.Command("python3", pythonScript)
+	// Parse the pythonScript to detect if it includes a custom Python interpreter
+	var cmd *exec.Cmd
+	parts := strings.Fields(pythonScript)
+
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("empty script path")
+	} else if len(parts) == 1 {
+		// Just a script path, use default python3
+		cmd = exec.Command("python3", parts[0])
+	} else {
+		// First part is Python interpreter, rest are arguments
+		cmd = exec.Command(parts[0], parts[1:]...)
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -88,9 +103,15 @@ func (c *StdioClient) Name() string {
 // Initialize establishes connection to MCP server
 func (c *StdioClient) Initialize(ctx context.Context) error {
 	params := InitializeParams{
+		ProtocolVersion: "2024-11-05",
+		Capabilities: ClientCapabilities{
+			Roots: &RootsCapability{
+				ListChanged: false,
+			},
+		},
 		ClientInfo: ClientInfo{
 			Name:    "extrachat",
-			Version: "1.0.0",
+			Version: "1.1.0",
 		},
 	}
 
@@ -99,7 +120,10 @@ func (c *StdioClient) Initialize(ctx context.Context) error {
 		return fmt.Errorf("initialize failed: %w", err)
 	}
 
-	c.logger.Info("MCP server initialized", "server", result.ServerInfo.Name, "version", result.ServerInfo.Version)
+	c.logger.Info("MCP server initialized",
+		"server", result.ServerInfo.Name,
+		"version", result.ServerInfo.Version,
+		"protocol", result.ProtocolVersion)
 	return nil
 }
 
