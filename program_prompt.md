@@ -102,7 +102,25 @@ For example: llama3:latest or llama3:2023-06-01
 
 ## Items  
 - I need to be able to debug the metric  output and routing. Can you also write the metrics to a log file called ./logs/metrics_traces.log
-
-## New Items 
 - Add Grok option to the LLM selection. 
 - Add the ability to select from any of the current ollama LLM that are available.
+
+# MCP Client 
+
+Add a Model Context Protocol (MCP) client that will handle both LOCAL and REMOTE requests
+This will be used to call any MCP Server
+
+Call a Local  MCP server written in Python
+Call a Remote MCP server that is listening on http://127.0.0.1:3000
+
+Create list of MCP services.
+Provide the ability to get additional details on each MCP connection
+
+Include "Search the Web" in the MCP list.
+
+
+# OR let Claude automatically call them:
+You: What's the weather like in San Francisco? 
+
+
+

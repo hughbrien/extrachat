@@ -1,349 +1,72 @@
-package main
+package chatbot
 
 import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"ExtraChat/internal/backend"
+	"ExtraChat/internal/cache"
+	"ExtraChat/internal/config"
+	"ExtraChat/internal/mcp"
+	"ExtraChat/internal/session"
+	"ExtraChat/internal/telemetry"
+
 	"go.opentelemetry.io/otel/metric"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
-	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
-
-const (
-	BackendOllama    = "ollama"
-	BackendAnthropic = "anthropic"
-	BackendGrok      = "grok"
-	BackendOpenAI    = "openai"
-)
-
-// Message represents a single chat message
-type Message struct {
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-// Session represents a chat session
-type Session struct {
-	ID        string    `json:"id"`
-	StartTime time.Time `json:"start_time"`
-	Backend   string    `json:"backend"`
-	Messages  []Message `json:"messages"`
-}
-
-// Config holds application configuration
-type Config struct {
-	Backend     string
-	SessionID   string
-	Debug       bool
-	OllamaModel string // Model specification in format "model:version" (e.g., "llama3:latest")
-}
-
-// AnthropicRequest represents the request body for Anthropic API
-type AnthropicRequest struct {
-	Model     string              `json:"model"`
-	MaxTokens int                 `json:"max_tokens"`
-	Messages  []map[string]string `json:"messages"`
-}
-
-// AnthropicResponse represents the response from Anthropic API
-type AnthropicResponse struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Role    string `json:"role"`
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	Model        string                 `json:"model"`
-	StopReason   string                 `json:"stop_reason"`
-	StopSequence string                 `json:"stop_sequence"`
-	Usage        map[string]interface{} `json:"usage"`
-}
-
-// OllamaRequest represents the request body for Ollama API
-type OllamaRequest struct {
-	Model    string              `json:"model"`
-	Messages []map[string]string `json:"messages"`
-	Stream   bool                `json:"stream"`
-}
-
-// OllamaResponse represents the response from Ollama API
-type OllamaResponse struct {
-	Model     string `json:"model"`
-	CreatedAt string `json:"created_at"`
-	Message   struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	} `json:"message"`
-	Done bool `json:"done"`
-}
-
-// OllamaTagsResponse represents the response from Ollama /api/tags endpoint
-type OllamaTagsResponse struct {
-	Models []OllamaModel `json:"models"`
-}
-
-// OllamaModel represents a single model in the Ollama tags response
-type OllamaModel struct {
-	Name       string `json:"name"`
-	ModifiedAt string `json:"modified_at"`
-	Size       int64  `json:"size"`
-	Digest     string `json:"digest"`
-}
-
-// OpenAIRequest represents the request body for OpenAI-compatible APIs
-type OpenAIRequest struct {
-	Model    string              `json:"model"`
-	Messages []map[string]string `json:"messages"`
-}
-
-// OpenAIResponse represents the response from OpenAI-compatible APIs
-type OpenAIResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index   int `json:"index"`
-		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage map[string]interface{} `json:"usage"`
-}
-
-// CachedResponse represents a cached API response
-type CachedResponse struct {
-	Response  string
-	Timestamp time.Time
-}
 
 // ChatBot represents the main application
 type ChatBot struct {
-	config     Config
+	config     config.Config
 	db         *sql.DB
 	cache      sync.Map
 	logger     *slog.Logger
 	tracer     trace.Tracer
 	meter      metric.Meter
 	httpClient *http.Client
-	session    *Session
+	session    *session.Session
 	mu         sync.Mutex
-}
 
-// initLogger initializes structured logging with rotation
-func initLogger() (*slog.Logger, error) {
-	logDir := "logs"
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create logs directory: %w", err)
-	}
-
-	logFile := filepath.Join(logDir, "chatbot.log")
-
-	lumberjackLogger := &lumberjack.Logger{
-		Filename:   logFile,
-		MaxSize:    10, // 10 MB
-		MaxBackups: 3,
-		MaxAge:     28,
-		Compress:   true,
-	}
-
-	// Log only to file, not to stdout
-	handler := slog.NewJSONHandler(lumberjackLogger, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})
-
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
-
-	return logger, nil
-}
-
-// initTelemetry initializes OpenTelemetry tracing and metrics
-// Traces are exported to ./logs/chatbot_traces.log for debugging
-// Metrics are exported to ./logs/metrics_traces.log for debugging (every 10 seconds)
-// OTEL collector can still pick up traces/metrics via the SDK
-func initTelemetry(ctx context.Context) (trace.Tracer, metric.Meter, func(), error) {
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName("chatbot"),
-			semconv.ServiceVersion("1.0.0"),
-		),
-	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create resource: %w", err)
-	}
-
-	// Create logs directory for traces
-	logDir := "logs"
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create logs directory: %w", err)
-	}
-
-	// Set up file writer for traces with rotation
-	traceFile := &lumberjack.Logger{
-		Filename:   filepath.Join(logDir, "extrachat_traces_process.log"),
-		MaxSize:    10, // 10 MB
-		MaxBackups: 3,
-		MaxAge:     28,
-		Compress:   true,
-	}
-
-	// Create trace exporter that writes to file
-	traceExporter, err := stdouttrace.New(
-		stdouttrace.WithWriter(traceFile),
-		stdouttrace.WithPrettyPrint(),
-	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create trace exporter: %w", err)
-	}
-
-	// Set up tracer provider with file exporter
-	// OTEL collector can still pick up traces via the SDK
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(traceExporter),
-		sdktrace.WithResource(res),
-	)
-	otel.SetTracerProvider(tp)
-
-	// Set up file writer for metrics with rotation
-	metricsFile := &lumberjack.Logger{
-		Filename:   filepath.Join(logDir, "extrachat_metrics_process.log"),
-		MaxSize:    10, // 10 MB
-		MaxBackups: 3,
-		MaxAge:     28,
-		Compress:   true,
-	}
-
-	// Create metrics exporter that writes to file
-	metricExporter, err := stdoutmetric.New(
-		stdoutmetric.WithWriter(metricsFile),
-		stdoutmetric.WithPrettyPrint(),
-	)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create metric exporter: %w", err)
-	}
-
-	// Set up meter provider with file exporter
-	// OTEL collector can still pick up metrics via the SDK
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(
-				metricExporter,
-				sdkmetric.WithInterval(10*time.Second),
-			),
-		),
-		sdkmetric.WithResource(res),
-	)
-	otel.SetMeterProvider(mp)
-
-	tracer := tp.Tracer("chatbot")
-	meter := mp.Meter("chatbot")
-
-	cleanup := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := tp.Shutdown(ctx); err != nil {
-			slog.Error("failed to shutdown tracer provider", "error", err)
-		}
-		if err := mp.Shutdown(ctx); err != nil {
-			slog.Error("failed to shutdown meter provider", "error", err)
-		}
-		if err := traceFile.Close(); err != nil {
-			slog.Error("failed to close trace file", "error", err)
-		}
-		if err := metricsFile.Close(); err != nil {
-			slog.Error("failed to close metrics file", "error", err)
-		}
-	}
-
-	return tracer, meter, cleanup, nil
-}
-
-// initDB initializes the SQLite database
-func initDB() (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", "chatbot.db")
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
-
-	createSessionsTable := `
-	CREATE TABLE IF NOT EXISTS sessions (
-		id TEXT PRIMARY KEY,
-		start_time DATETIME,
-		backend TEXT
-	);`
-
-	createMessagesTable := `
-	CREATE TABLE IF NOT EXISTS messages (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		session_id TEXT,
-		role TEXT,
-		content TEXT,
-		timestamp DATETIME,
-		FOREIGN KEY(session_id) REFERENCES sessions(id)
-	);`
-
-	if _, err := db.Exec(createSessionsTable); err != nil {
-		return nil, fmt.Errorf("failed to create sessions table: %w", err)
-	}
-
-	if _, err := db.Exec(createMessagesTable); err != nil {
-		return nil, fmt.Errorf("failed to create messages table: %w", err)
-	}
-
-	return db, nil
+	// MCP support
+	mcpRegistry *mcp.ClientRegistry // Registry of MCP clients
+	mcpTools    []mcp.Tool           // Available tools from all MCP servers
 }
 
 // NewChatBot creates a new ChatBot instance
-func NewChatBot(config Config) (*ChatBot, error) {
-	logger, err := initLogger()
+func NewChatBot(cfg config.Config) (*ChatBot, error) {
+	logger, err := telemetry.InitLogger()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize logger: %w", err)
 	}
 
 	ctx := context.Background()
-	tracer, meter, _, err := initTelemetry(ctx)
+	tracer, meter, _, err := telemetry.InitTelemetry(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize telemetry: %w", err)
 	}
 
-	db, err := initDB()
+	db, err := telemetry.InitDB()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
 	}
 
-	if config.Debug {
+	if cfg.Debug {
 		logger.Info("Debug mode enabled")
 	}
 
 	cb := &ChatBot{
-		config:     config,
+		config:     cfg,
 		db:         db,
 		logger:     logger,
 		tracer:     tracer,
@@ -351,37 +74,44 @@ func NewChatBot(config Config) (*ChatBot, error) {
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
 
-	if config.SessionID != "" {
-		session, err := cb.loadSession(config.SessionID)
+	if cfg.SessionID != "" {
+		sess, err := cb.loadSession(cfg.SessionID)
 		if err != nil {
 			logger.Warn("failed to load session, creating new one", "error", err)
 			cb.session = cb.newSession()
 		} else {
-			cb.session = session
-			logger.Info("loaded existing session", "session_id", session.ID)
+			cb.session = sess
+			logger.Info("loaded existing session", "session_id", sess.ID)
 		}
 	} else {
 		cb.session = cb.newSession()
+	}
+
+	// Initialize MCP if enabled
+	if cfg.MCPEnabled {
+		if err := cb.initializeMCP(); err != nil {
+			logger.Warn("failed to initialize MCP, continuing without MCP support", "error", err)
+		}
 	}
 
 	return cb, nil
 }
 
 // newSession creates a new session
-func (cb *ChatBot) newSession() *Session {
+func (cb *ChatBot) newSession() *session.Session {
 	sessionID := fmt.Sprintf("session_%d", time.Now().Unix())
-	session := &Session{
+	sess := &session.Session{
 		ID:        sessionID,
 		StartTime: time.Now(),
 		Backend:   cb.config.Backend,
-		Messages:  []Message{},
+		Messages:  []session.Message{},
 	}
 	cb.logger.Info("created new session", "session_id", sessionID, "backend", cb.config.Backend)
-	return session
+	return sess
 }
 
 // loadSession loads a session from the database
-func (cb *ChatBot) loadSession(sessionID string) (*Session, error) {
+func (cb *ChatBot) loadSession(sessionID string) (*session.Session, error) {
 	var backend string
 	var startTime time.Time
 
@@ -400,16 +130,16 @@ func (cb *ChatBot) loadSession(sessionID string) (*Session, error) {
 	}
 	defer rows.Close()
 
-	messages := []Message{}
+	messages := []session.Message{}
 	for rows.Next() {
-		var msg Message
+		var msg session.Message
 		if err := rows.Scan(&msg.Role, &msg.Content, &msg.Timestamp); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
 		messages = append(messages, msg)
 	}
 
-	return &Session{
+	return &session.Session{
 		ID:        sessionID,
 		StartTime: startTime,
 		Backend:   backend,
@@ -454,20 +184,10 @@ func (cb *ChatBot) saveSession() error {
 	return nil
 }
 
-// generateCacheKey generates a cache key from messages
-func generateCacheKey(messages []Message) string {
-	h := sha256.New()
-	for _, msg := range messages {
-		h.Write([]byte(msg.Role))
-		h.Write([]byte(msg.Content))
-	}
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
 // checkCache checks if a response is cached
 func (cb *ChatBot) checkCache(cacheKey string) (string, bool) {
 	if val, ok := cb.cache.Load(cacheKey); ok {
-		cached := val.(CachedResponse)
+		cached := val.(cache.CachedResponse)
 		cb.logger.Info("cache hit", "key", cacheKey[:16])
 		return cached.Response, true
 	}
@@ -476,7 +196,7 @@ func (cb *ChatBot) checkCache(cacheKey string) (string, bool) {
 
 // storeCache stores a response in cache
 func (cb *ChatBot) storeCache(cacheKey, response string) {
-	cb.cache.Store(cacheKey, CachedResponse{
+	cb.cache.Store(cacheKey, cache.CachedResponse{
 		Response:  response,
 		Timestamp: time.Now(),
 	})
@@ -504,8 +224,21 @@ func (cb *ChatBot) recordMetrics(ctx context.Context, usage map[string]interface
 	}
 }
 
+// convertMCPToolsToAnthropic converts MCP tools to Anthropic tool format
+func (cb *ChatBot) convertMCPToolsToAnthropic() []backend.AnthropicTool {
+	tools := make([]backend.AnthropicTool, len(cb.mcpTools))
+	for i, mcpTool := range cb.mcpTools {
+		tools[i] = backend.AnthropicTool{
+			Name:        mcpTool.Name,
+			Description: mcpTool.Description,
+			InputSchema: mcpTool.InputSchema,
+		}
+	}
+	return tools
+}
+
 // callAnthropic calls the Anthropic API
-func (cb *ChatBot) callAnthropic(ctx context.Context, messages []Message) (string, error) {
+func (cb *ChatBot) callAnthropic(ctx context.Context, messages []session.Message) (string, error) {
 	ctx, span := cb.tracer.Start(ctx, "anthropic_api_call")
 	defer span.End()
 
@@ -516,18 +249,25 @@ func (cb *ChatBot) callAnthropic(ctx context.Context, messages []Message) (strin
 		return "", fmt.Errorf("ANTHROPIC_API_KEY not set")
 	}
 
-	reqMessages := make([]map[string]string, len(messages))
+	// Convert session messages to Anthropic message format
+	reqMessages := make([]backend.AnthropicMessage, len(messages))
 	for i, msg := range messages {
-		reqMessages[i] = map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
+		reqMessages[i] = backend.AnthropicMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
 		}
 	}
 
-	reqBody := AnthropicRequest{
+	// Build request with tools if MCP is enabled
+	reqBody := backend.AnthropicRequest{
 		Model:     "claude-sonnet-4-20250514",
 		MaxTokens: 1024,
 		Messages:  reqMessages,
+	}
+
+	// Add MCP tools if available
+	if cb.config.MCPEnabled && len(cb.mcpTools) > 0 {
+		reqBody.Tools = cb.convertMCPToolsToAnthropic()
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -559,7 +299,7 @@ func (cb *ChatBot) callAnthropic(ctx context.Context, messages []Message) (strin
 		return "", fmt.Errorf("API error: %s - %s", resp.Status, string(body))
 	}
 
-	var apiResp AnthropicResponse
+	var apiResp backend.AnthropicResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return "", fmt.Errorf("failed to unmarshal response: %w", err)
 	}
@@ -575,15 +315,23 @@ func (cb *ChatBot) callAnthropic(ctx context.Context, messages []Message) (strin
 
 	cb.recordMetrics(ctx, apiResp.Usage)
 
-	if len(apiResp.Content) > 0 {
-		return apiResp.Content[0].Text, nil
+	// Handle tool use
+	if apiResp.StopReason == "tool_use" {
+		return cb.handleAnthropicToolUse(ctx, messages, apiResp)
+	}
+
+	// Extract text response
+	for _, content := range apiResp.Content {
+		if content.Type == "text" {
+			return content.Text, nil
+		}
 	}
 
 	return "", fmt.Errorf("empty response from Anthropic")
 }
 
 // callOllama calls the Ollama API
-func (cb *ChatBot) callOllama(ctx context.Context, messages []Message) (string, error) {
+func (cb *ChatBot) callOllama(ctx context.Context, messages []session.Message) (string, error) {
 	ctx, span := cb.tracer.Start(ctx, "ollama_api_call")
 	defer span.End()
 
@@ -597,7 +345,7 @@ func (cb *ChatBot) callOllama(ctx context.Context, messages []Message) (string, 
 		}
 	}
 
-	reqBody := OllamaRequest{
+	reqBody := backend.OllamaRequest{
 		Model:    cb.config.OllamaModel,
 		Messages: reqMessages,
 		Stream:   false,
@@ -630,7 +378,7 @@ func (cb *ChatBot) callOllama(ctx context.Context, messages []Message) (string, 
 		return "", fmt.Errorf("API error: %s - %s", resp.Status, string(body))
 	}
 
-	var apiResp OllamaResponse
+	var apiResp backend.OllamaResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return "", fmt.Errorf("failed to unmarshal response: %w", err)
 	}
@@ -648,7 +396,7 @@ func (cb *ChatBot) callOllama(ctx context.Context, messages []Message) (string, 
 }
 
 // callGrok calls the Grok API
-func (cb *ChatBot) callGrok(ctx context.Context, messages []Message) (string, error) {
+func (cb *ChatBot) callGrok(ctx context.Context, messages []session.Message) (string, error) {
 	ctx, span := cb.tracer.Start(ctx, "grok_api_call")
 	defer span.End()
 
@@ -667,7 +415,7 @@ func (cb *ChatBot) callGrok(ctx context.Context, messages []Message) (string, er
 		}
 	}
 
-	reqBody := OpenAIRequest{
+	reqBody := backend.OpenAIRequest{
 		Model:    "grok-1",
 		Messages: reqMessages,
 	}
@@ -700,7 +448,7 @@ func (cb *ChatBot) callGrok(ctx context.Context, messages []Message) (string, er
 		return "", fmt.Errorf("API error: %s - %s", resp.Status, string(body))
 	}
 
-	var apiResp OpenAIResponse
+	var apiResp backend.OpenAIResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return "", fmt.Errorf("failed to unmarshal response: %w", err)
 	}
@@ -724,7 +472,7 @@ func (cb *ChatBot) callGrok(ctx context.Context, messages []Message) (string, er
 }
 
 // callOpenAI calls the OpenAI API
-func (cb *ChatBot) callOpenAI(ctx context.Context, messages []Message) (string, error) {
+func (cb *ChatBot) callOpenAI(ctx context.Context, messages []session.Message) (string, error) {
 	ctx, span := cb.tracer.Start(ctx, "openai_api_call")
 	defer span.End()
 
@@ -743,7 +491,7 @@ func (cb *ChatBot) callOpenAI(ctx context.Context, messages []Message) (string, 
 		}
 	}
 
-	reqBody := OpenAIRequest{
+	reqBody := backend.OpenAIRequest{
 		Model:    "gpt-3.5-turbo",
 		Messages: reqMessages,
 	}
@@ -776,7 +524,7 @@ func (cb *ChatBot) callOpenAI(ctx context.Context, messages []Message) (string, 
 		return "", fmt.Errorf("API error: %s - %s", resp.Status, string(body))
 	}
 
-	var apiResp OpenAIResponse
+	var apiResp backend.OpenAIResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return "", fmt.Errorf("failed to unmarshal response: %w", err)
 	}
@@ -800,7 +548,7 @@ func (cb *ChatBot) callOpenAI(ctx context.Context, messages []Message) (string, 
 }
 
 // listOllamaModels fetches the list of available Ollama models
-func (cb *ChatBot) listOllamaModels(ctx context.Context) ([]OllamaModel, error) {
+func (cb *ChatBot) listOllamaModels(ctx context.Context) ([]backend.OllamaModel, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost:11434/api/tags", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -821,7 +569,7 @@ func (cb *ChatBot) listOllamaModels(ctx context.Context) ([]OllamaModel, error) 
 		return nil, fmt.Errorf("API error: %s - %s", resp.Status, string(body))
 	}
 
-	var tagsResp OllamaTagsResponse
+	var tagsResp backend.OllamaTagsResponse
 	if err := json.Unmarshal(body, &tagsResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
@@ -832,20 +580,20 @@ func (cb *ChatBot) listOllamaModels(ctx context.Context) ([]OllamaModel, error) 
 // sendMessage sends a message to the current backend
 func (cb *ChatBot) sendMessage(ctx context.Context, userMessage string) (string, error) {
 	cb.mu.Lock()
-	cb.session.Messages = append(cb.session.Messages, Message{
+	cb.session.Messages = append(cb.session.Messages, session.Message{
 		Role:      "user",
 		Content:   userMessage,
 		Timestamp: time.Now(),
 	})
-	messages := make([]Message, len(cb.session.Messages))
+	messages := make([]session.Message, len(cb.session.Messages))
 	copy(messages, cb.session.Messages)
 	backend := cb.session.Backend
 	cb.mu.Unlock()
 
-	cacheKey := generateCacheKey(messages)
+	cacheKey := cache.GenerateCacheKey(messages)
 	if cached, ok := cb.checkCache(cacheKey); ok {
 		cb.mu.Lock()
-		cb.session.Messages = append(cb.session.Messages, Message{
+		cb.session.Messages = append(cb.session.Messages, session.Message{
 			Role:      "assistant",
 			Content:   cached,
 			Timestamp: time.Now(),
@@ -858,13 +606,13 @@ func (cb *ChatBot) sendMessage(ctx context.Context, userMessage string) (string,
 	var err error
 
 	switch backend {
-	case BackendOllama:
+	case config.BackendOllama:
 		response, err = cb.callOllama(ctx, messages)
-	case BackendAnthropic:
+	case config.BackendAnthropic:
 		response, err = cb.callAnthropic(ctx, messages)
-	case BackendGrok:
+	case config.BackendGrok:
 		response, err = cb.callGrok(ctx, messages)
-	case BackendOpenAI:
+	case config.BackendOpenAI:
 		response, err = cb.callOpenAI(ctx, messages)
 	default:
 		return "", fmt.Errorf("unknown backend: %s", backend)
@@ -877,7 +625,7 @@ func (cb *ChatBot) sendMessage(ctx context.Context, userMessage string) (string,
 	cb.storeCache(cacheKey, response)
 
 	cb.mu.Lock()
-	cb.session.Messages = append(cb.session.Messages, Message{
+	cb.session.Messages = append(cb.session.Messages, session.Message{
 		Role:      "assistant",
 		Content:   response,
 		Timestamp: time.Now(),
@@ -916,15 +664,15 @@ func (cb *ChatBot) handleCommand(cmd string) (bool, error) {
 		if len(parts) < 2 {
 			return false, fmt.Errorf("usage: /switch <backend> (ollama|anthropic|grok|openai)")
 		}
-		backend := parts[1]
-		switch backend {
-		case BackendOllama, BackendAnthropic, BackendGrok, BackendOpenAI:
+		backendName := parts[1]
+		switch backendName {
+		case config.BackendOllama, config.BackendAnthropic, config.BackendGrok, config.BackendOpenAI:
 			cb.mu.Lock()
-			cb.session.Backend = backend
+			cb.session.Backend = backendName
 			cb.mu.Unlock()
-			fmt.Printf("Switched to %s backend\n", backend)
+			fmt.Printf("Switched to %s backend\n", backendName)
 		default:
-			return false, fmt.Errorf("unknown backend: %s", backend)
+			return false, fmt.Errorf("unknown backend: %s", backendName)
 		}
 		return false, nil
 
@@ -957,6 +705,52 @@ func (cb *ChatBot) handleCommand(cmd string) (bool, error) {
 		fmt.Printf("Ollama model set to: %s\n", modelName)
 		return false, nil
 
+	case "/mcp-list":
+		if !cb.config.MCPEnabled || cb.mcpRegistry == nil {
+			fmt.Println("MCP is not enabled. Use --mcp-enabled flag to enable.")
+			return false, nil
+		}
+		if len(cb.mcpTools) == 0 {
+			fmt.Println("No MCP tools available.")
+			return false, nil
+		}
+		fmt.Println("\nAvailable MCP Tools:")
+		for i, tool := range cb.mcpTools {
+			fmt.Printf("%d. %s (%s)\n", i+1, tool.Name, tool.ServerName)
+			fmt.Printf("   %s\n", tool.Description)
+		}
+		fmt.Println()
+		return false, nil
+
+	case "/mcp-servers":
+		if !cb.config.MCPEnabled || cb.mcpRegistry == nil {
+			fmt.Println("MCP is not enabled. Use --mcp-enabled flag to enable.")
+			return false, nil
+		}
+		clients := cb.mcpRegistry.All()
+		if len(clients) == 0 {
+			fmt.Println("No MCP servers connected.")
+			return false, nil
+		}
+		fmt.Println("\nConnected MCP Servers:")
+		for i, client := range clients {
+			fmt.Printf("%d. %s\n", i+1, client.Name())
+		}
+		fmt.Printf("\nTotal: %d servers, %d tools\n\n", len(clients), len(cb.mcpTools))
+		return false, nil
+
+	case "/mcp-reload":
+		if !cb.config.MCPEnabled || cb.mcpRegistry == nil {
+			fmt.Println("MCP is not enabled. Use --mcp-enabled flag to enable.")
+			return false, nil
+		}
+		ctx := context.Background()
+		if err := cb.refreshMCPTools(ctx); err != nil {
+			return false, fmt.Errorf("failed to reload MCP tools: %w", err)
+		}
+		fmt.Printf("Reloaded MCP tools. Total: %d tools from %d servers\n", len(cb.mcpTools), cb.mcpRegistry.Count())
+		return false, nil
+
 	case "/help":
 		fmt.Println("Available commands:")
 		fmt.Println("  /quit, /exit              - Exit the chatbot")
@@ -964,6 +758,11 @@ func (cb *ChatBot) handleCommand(cmd string) (bool, error) {
 		fmt.Println("  /switch <backend>         - Switch LLM backend (ollama|anthropic|grok|openai)")
 		fmt.Println("  /list-ollama-models       - List available Ollama models")
 		fmt.Println("  /set-ollama-model <model> - Set Ollama model (e.g., llama3:latest)")
+		if cb.config.MCPEnabled {
+			fmt.Println("  /mcp-list                 - List all available MCP tools")
+			fmt.Println("  /mcp-servers              - Show connected MCP servers")
+			fmt.Println("  /mcp-reload               - Reload tools from MCP servers")
+		}
 		fmt.Println("  /help                     - Show this help message")
 		return false, nil
 
@@ -1027,22 +826,257 @@ func (cb *ChatBot) Run() error {
 	return nil
 }
 
-func main() {
-	var config Config
-	flag.StringVar(&config.Backend, "backend", BackendOllama, "LLM backend (ollama|anthropic|grok|openai)")
-	flag.StringVar(&config.SessionID, "session-id", "", "Load existing session by ID")
-	flag.BoolVar(&config.Debug, "debug", false, "Enable debug logging")
-	flag.StringVar(&config.OllamaModel, "ollama-model", "llama3:latest", "Ollama model specification (format: model:version)")
-	flag.Parse()
+// handleAnthropicToolUse handles tool use responses from Anthropic
+func (cb *ChatBot) handleAnthropicToolUse(ctx context.Context, messages []session.Message, apiResp backend.AnthropicResponse) (string, error) {
+	cb.logger.Info("handling tool use", "tools_count", len(apiResp.Content))
 
-	bot, err := NewChatBot(config)
+	// Extract tool use requests and invoke them
+	toolResults := []backend.AnthropicContent{}
+	var assistantContent []backend.AnthropicContent
+
+	// First, collect the assistant's response (which includes tool_use blocks)
+	assistantContent = apiResp.Content
+
+	// Process each content block
+	for _, content := range apiResp.Content {
+		if content.Type == "tool_use" {
+			cb.logger.Info("invoking MCP tool", "tool", content.Name, "id", content.ID)
+
+			// Call the MCP tool
+			result, err := cb.invokeMCPTool(ctx, content.Name, content.Input)
+
+			var toolResult backend.AnthropicContent
+			if err != nil {
+				// Tool invocation failed
+				cb.logger.Error("tool invocation failed", "tool", content.Name, "error", err)
+				toolResult = backend.AnthropicContent{
+					Type:      "tool_result",
+					ToolUseID: content.ID,
+					Content:   fmt.Sprintf("Error: %v", err),
+					IsError:   true,
+				}
+			} else {
+				// Tool invocation succeeded
+				// Convert result to string for simplicity
+				resultStr, err := json.Marshal(result)
+				if err != nil {
+					resultStr = []byte(fmt.Sprintf("%v", result))
+				}
+				toolResult = backend.AnthropicContent{
+					Type:      "tool_result",
+					ToolUseID: content.ID,
+					Content:   string(resultStr),
+				}
+			}
+			toolResults = append(toolResults, toolResult)
+		}
+	}
+
+	if len(toolResults) == 0 {
+		return "", fmt.Errorf("tool_use stop reason but no tool_use blocks found")
+	}
+
+	// Build a new request with the assistant's response and tool results
+	// Convert existing messages to Anthropic format
+	reqMessages := make([]backend.AnthropicMessage, len(messages))
+	for i, msg := range messages {
+		reqMessages[i] = backend.AnthropicMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+	}
+
+	// Add the assistant's message with tool_use blocks
+	reqMessages = append(reqMessages, backend.AnthropicMessage{
+		Role:    "assistant",
+		Content: assistantContent,
+	})
+
+	// Add the user's message with tool results
+	reqMessages = append(reqMessages, backend.AnthropicMessage{
+		Role:    "user",
+		Content: toolResults,
+	})
+
+	// Make another API call with tool results
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		return "", fmt.Errorf("ANTHROPIC_API_KEY not set")
+	}
+
+	reqBody := backend.AnthropicRequest{
+		Model:     "claude-sonnet-4-20250514",
+		MaxTokens: 1024,
+		Messages:  reqMessages,
+		Tools:     cb.convertMCPToolsToAnthropic(),
+	}
+
+	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize chatbot: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("failed to marshal follow-up request: %w", err)
 	}
 
-	if err := bot.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("failed to create follow-up request: %w", err)
 	}
+
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("content-type", "application/json")
+
+	resp, err := cb.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send follow-up request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read follow-up response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("API error on follow-up: %s - %s", resp.Status, string(body))
+	}
+
+	var followUpResp backend.AnthropicResponse
+	if err := json.Unmarshal(body, &followUpResp); err != nil {
+		return "", fmt.Errorf("failed to unmarshal follow-up response: %w", err)
+	}
+
+	cb.recordMetrics(ctx, followUpResp.Usage)
+
+	// Check if we need to handle more tool use (recursive)
+	if followUpResp.StopReason == "tool_use" {
+		// Recursive tool use - update messages and call again
+		// Add assistant's tool use message to our history
+		messages = append(messages, session.Message{
+			Role:      "assistant",
+			Content:   "[Tool use in progress]",
+			Timestamp: time.Now(),
+		})
+		// Add tool results to history
+		messages = append(messages, session.Message{
+			Role:      "user",
+			Content:   "[Tool results]",
+			Timestamp: time.Now(),
+		})
+		return cb.handleAnthropicToolUse(ctx, messages, followUpResp)
+	}
+
+	// Extract final text response
+	for _, content := range followUpResp.Content {
+		if content.Type == "text" {
+			return content.Text, nil
+		}
+	}
+
+	return "", fmt.Errorf("empty response after tool use")
+}
+
+// initializeMCP sets up MCP clients based on config
+func (cb *ChatBot) initializeMCP() error {
+	ctx := context.Background()
+	cb.mcpRegistry = mcp.NewClientRegistry()
+
+	// Initialize local Python MCP servers
+	for _, scriptPath := range cb.config.MCPLocalServers {
+		client, err := mcp.NewStdioClient(scriptPath, scriptPath, cb.logger)
+		if err != nil {
+			cb.logger.Warn("failed to create stdio MCP client", "script", scriptPath, "error", err)
+			continue
+		}
+
+		if err := client.Initialize(ctx); err != nil {
+			cb.logger.Warn("failed to initialize stdio MCP client", "script", scriptPath, "error", err)
+			client.Close()
+			continue
+		}
+
+		cb.mcpRegistry.Register(scriptPath, client)
+		cb.logger.Info("registered local MCP server", "script", scriptPath)
+	}
+
+	// Initialize remote MCP servers
+	for _, serverURL := range cb.config.MCPRemoteServers {
+		var client mcp.MCPClient
+		var err error
+
+		// Determine protocol based on URL prefix
+		if strings.HasPrefix(serverURL, "ws://") || strings.HasPrefix(serverURL, "wss://") {
+			client, err = mcp.NewWebSocketClient(serverURL, serverURL, cb.logger)
+		} else {
+			client, err = mcp.NewHTTPClient(serverURL, serverURL, cb.logger)
+		}
+
+		if err != nil {
+			cb.logger.Warn("failed to create remote MCP client", "url", serverURL, "error", err)
+			continue
+		}
+
+		if err := client.Initialize(ctx); err != nil {
+			cb.logger.Warn("failed to initialize remote MCP client", "url", serverURL, "error", err)
+			client.Close()
+			continue
+		}
+
+		cb.mcpRegistry.Register(serverURL, client)
+		cb.logger.Info("registered remote MCP server", "url", serverURL)
+	}
+
+	// Refresh tools from all MCP servers
+	if err := cb.refreshMCPTools(ctx); err != nil {
+		return fmt.Errorf("failed to refresh MCP tools: %w", err)
+	}
+
+	cb.logger.Info("MCP initialized", "servers", cb.mcpRegistry.Count(), "tools", len(cb.mcpTools))
+	return nil
+}
+
+// refreshMCPTools fetches all available tools from MCP servers
+func (cb *ChatBot) refreshMCPTools(ctx context.Context) error {
+	cb.mcpTools = []mcp.Tool{}
+
+	for _, client := range cb.mcpRegistry.All() {
+		tools, err := client.ListTools(ctx)
+		if err != nil {
+			cb.logger.Warn("failed to list tools from MCP server", "server", client.Name(), "error", err)
+			continue
+		}
+
+		cb.mcpTools = append(cb.mcpTools, tools...)
+		cb.logger.Info("loaded tools from MCP server", "server", client.Name(), "count", len(tools))
+	}
+
+	return nil
+}
+
+// invokeMCPTool calls an MCP tool and returns the result
+func (cb *ChatBot) invokeMCPTool(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
+	// Find which server provides this tool
+	var targetClient mcp.MCPClient
+	for _, tool := range cb.mcpTools {
+		if tool.Name == toolName {
+			client, ok := cb.mcpRegistry.Get(tool.ServerName)
+			if !ok {
+				return nil, fmt.Errorf("server %s not found for tool %s", tool.ServerName, toolName)
+			}
+			targetClient = client
+			break
+		}
+	}
+
+	if targetClient == nil {
+		return nil, fmt.Errorf("tool %s not found", toolName)
+	}
+
+	// Call the tool
+	result, err := targetClient.CallTool(ctx, toolName, args)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call tool %s: %w", toolName, err)
+	}
+
+	cb.logger.Info("invoked MCP tool", "tool", toolName, "server", targetClient.Name())
+	return result, nil
 }

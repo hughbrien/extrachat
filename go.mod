@@ -18,6 +18,7 @@ require (
 	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/go-logr/logr v1.4.1 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	golang.org/x/sys v0.17.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
